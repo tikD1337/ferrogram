@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         let message = Message {
+            video: None,
             id: MessageId(1048576),
             chat: ChatId(1),
             date: 0,

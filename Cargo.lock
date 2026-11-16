@@ -3992,6 +3992,7 @@ dependencies = [
  "i-slint-renderer-software",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "vtable",
 ]
@@ -4366,6 +4367,8 @@ name = "tg-platform"
 version = "0.1.0"
 dependencies = [
  "tg-core",
+ "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 
@@ -4396,6 +4399,7 @@ dependencies = [
  "jpeg-decoder",
  "parley",
  "qrcode",
+ "raw-window-handle",
  "slint",
  "slint-build",
  "swash",

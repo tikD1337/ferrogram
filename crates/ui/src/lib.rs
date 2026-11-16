@@ -18,7 +18,7 @@ use std::{
 };
 use tg_core::{
     AuthState, Command, CommandError, CommandKind, Event, MessageId, Notification, ReadBatches,
-    Secret,
+    Secret, VideoRect, VideoRequest,
 };
 pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -39,10 +39,13 @@ pub struct Options {
     pub demo: bool,
     pub snapshot: Option<PathBuf>,
     pub demo_scroll: Option<u32>,
+    /// Demo only: open the newest synthetic video after startup and exit after this many seconds.
+    pub demo_video: Option<u32>,
     /// Loaded off-thread by tg-app. At most 32 MiB, never bundled.
     pub emoji_font: Option<Vec<u8>>,
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
+type VideoFn = Box<dyn Fn(VideoRequest) -> Result<(), CommandError>>;
 struct State {
     media: Rc<RefCell<media::Media>>,
     chats: Rc<Chats>,
@@ -53,11 +56,82 @@ struct State {
     focused: Cell<bool>,
     reads: RefCell<ReadBatches>,
     notifications: RefCell<NotifyFn>,
+    video: RefCell<VideoFn>,
+    /// The video in the player: its TDLib file ID and the local path once downloaded.
+    playing: RefCell<Option<(i32, Option<PathBuf>)>>,
     total_unread: Cell<Option<u32>>,
     // Seek the actual oldest edge for an entirely unread chat (TDLib has no oldest sentinel).
     seek_start: Cell<bool>,
 }
 impl State {
+    /// Physical-pixel area above the player's control bar.
+    fn video_rect(window: &AppWindow) -> VideoRect {
+        let size = window.window().size();
+        let bar = (window.get_player_bar() * window.window().scale_factor()).round() as i32;
+        VideoRect {
+            x: 0,
+            y: 0,
+            width: i32::try_from(size.width).unwrap_or(i32::MAX).max(1),
+            height: (i32::try_from(size.height).unwrap_or(i32::MAX) - bar).max(1),
+        }
+    }
+    fn video(&self, window: &AppWindow, request: VideoRequest) {
+        if let Err(error) = (self.video.borrow())(request) {
+            window.set_player_loading(false);
+            window.set_player_failed(true);
+            window.set_error(error.message.into());
+        }
+    }
+    fn start_video(&self, window: &AppWindow, path: PathBuf) {
+        window.set_player_loading(false);
+        let Some(handle) = native_window(window) else {
+            window.set_player_failed(true);
+            return;
+        };
+        let rect = Self::video_rect(window);
+        self.video(
+            window,
+            VideoRequest::Open {
+                path,
+                window: handle,
+                rect,
+            },
+        );
+    }
+    fn open_video(&self, window: &AppWindow, row: usize, cell: usize) {
+        if let Some(video) = self.feed.video_at(row, cell) {
+            self.play(window, video);
+        }
+    }
+    fn play(&self, window: &AppWindow, video: tg_core::Video) {
+        self.close_video(window);
+        window.set_player_open(true);
+        window.set_player_failed(false);
+        window.set_player_playing(false);
+        window.set_player_progress(0.0);
+        window.set_player_time(format!("0:00 / {}", clock::duration(video.duration)).into());
+        *self.playing.borrow_mut() = Some((video.file.id, video.file.path.clone()));
+        if let Some(path) = video.file.path {
+            self.start_video(window, path);
+        } else {
+            window.set_player_loading(true);
+            // Downloaded completely before playback; streaming is a later step.
+            if !self.send(window, Command::DownloadFile(video.file.id)) {
+                window.set_player_loading(false);
+                window.set_player_failed(true);
+            }
+        }
+    }
+    fn close_video(&self, window: &AppWindow) {
+        if let Some((id, path)) = self.playing.borrow_mut().take() {
+            if path.is_none() {
+                self.send(window, Command::CancelDownload(id));
+            }
+            self.video(window, VideoRequest::Close);
+        }
+        window.set_player_open(false);
+        window.set_player_loading(false);
+    }
     fn send(&self, window: &AppWindow, command: Command) -> bool {
         if window.get_blocked() {
             return false;
@@ -426,7 +500,35 @@ impl State {
                 }
             }
             Event::FileUpdated(file) => {
+                let ready = match self.playing.borrow_mut().as_mut() {
+                    Some((id, path)) if *id == file.id && path.is_none() && file.path.is_some() => {
+                        path.clone_from(&file.path);
+                        path.clone()
+                    }
+                    _ => None,
+                };
                 self.media.borrow_mut().file(file);
+                if let Some(path) = ready
+                    && window.get_player_open()
+                {
+                    self.start_video(window, path);
+                }
+            }
+            Event::VideoState(state) => {
+                if window.get_player_open() {
+                    let duration = state.duration_ms.max(1);
+                    window.set_player_playing(state.playing);
+                    window.set_player_failed(state.failed);
+                    window.set_player_progress(state.position_ms as f32 / duration as f32);
+                    window.set_player_time(
+                        format!(
+                            "{} / {}",
+                            clock::duration(state.position_ms / 1000),
+                            clock::duration(state.duration_ms / 1000)
+                        )
+                        .into(),
+                    );
+                }
             }
             Event::ChatListChanged(change) => {
                 self.chats.apply(change);
@@ -546,6 +648,15 @@ impl State {
 }
 /// Header avatar size in logical pixels; app.slint uses the same value.
 const HEADER_AVATAR: f32 = 38.0;
+/// The Win32 handle of the main window, for the player's child window.
+fn native_window(window: &AppWindow) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = window.window().window_handle();
+    match handle.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+        _ => None,
+    }
+}
 fn qr_image(link: &str) -> Result<slint::Image, ()> {
     // QR input bounded by the engine to 4 KiB. QR version 40 caps the matrix at 177?.
     let code = qrcode::QrCode::new(link).map_err(|_| ())?;
@@ -570,6 +681,7 @@ pub struct Ui {
     sink: EventSink,
     snapshot: Option<PathBuf>,
     demo_scroll: Option<u32>,
+    demo_video: Option<u32>,
     state: Rc<State>,
 }
 impl std::fmt::Debug for Ui {
@@ -609,6 +721,13 @@ impl Ui {
             focused: Cell::new(false),
             reads: RefCell::default(),
             notifications: RefCell::new(Box::new(|_| Ok(()))),
+            video: RefCell::new(Box::new(|_| {
+                Err(CommandError {
+                    code: -4,
+                    message: "Video playback is not available.".into(),
+                })
+            })),
+            playing: RefCell::default(),
             total_unread: Cell::new(None),
             seek_start: Cell::new(false),
         });
@@ -664,6 +783,44 @@ impl Ui {
                     s.feed.invalidate();
                     s.refresh(&w);
                 }
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_open_video(move |row, cell| {
+            if let Some(w) = weak.upgrade() {
+                s.open_video(&w, row.max(0) as usize, cell.max(0) as usize);
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_player_toggle(move || {
+            if let Some(w) = weak.upgrade() {
+                s.video(&w, VideoRequest::TogglePause);
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_player_seek(move |fraction| {
+            if let Some(w) = weak.upgrade() {
+                s.video(&w, VideoRequest::Seek(f64::from(fraction)));
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_player_close(move || {
+            if let Some(w) = weak.upgrade() {
+                s.close_video(&w);
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_player_area_changed(move || {
+            if let Some(w) = weak.upgrade()
+                && w.get_player_open()
+                && s.playing.borrow().as_ref().is_some_and(|p| p.1.is_some())
+            {
+                s.video(&w, VideoRequest::Move(State::video_rect(&w)));
             }
         });
         let weak = window.as_weak();
@@ -792,6 +949,7 @@ impl Ui {
             sink,
             snapshot: options.snapshot,
             demo_scroll: options.demo_scroll,
+            demo_video: options.demo_video,
             state,
         })
     }
@@ -800,6 +958,10 @@ impl Ui {
         handler: impl Fn(Notification) -> Result<(), CommandError> + 'static,
     ) {
         *self.state.notifications.borrow_mut() = Box::new(handler);
+    }
+    /// Video requests run on the UI thread, which owns the main window.
+    pub fn on_video(&self, handler: impl Fn(VideoRequest) -> Result<(), CommandError> + 'static) {
+        *self.state.video.borrow_mut() = Box::new(handler);
     }
     pub fn event_sink(&self) -> EventSink {
         self.sink.clone()
@@ -831,6 +993,21 @@ impl Ui {
                     }
                 },
             );
+        }
+        if let Some(seconds) = self.demo_video {
+            let weak = self.window.as_weak();
+            let state = self.state.clone();
+            // Demo-only single shots: let the first page arrive, then open the newest video.
+            slint::Timer::single_shot(Duration::from_millis(1500), move || {
+                if let Some(w) = weak.upgrade()
+                    && let Some(video) = state.feed.newest_video()
+                {
+                    state.play(&w, video);
+                }
+            });
+            slint::Timer::single_shot(Duration::from_secs(u64::from(seconds)), || {
+                let _ = slint::quit_event_loop();
+            });
         }
         if let Some(path) = self.snapshot {
             let weak = self.window.as_weak();

@@ -163,6 +163,7 @@ mod tests {
     }
     fn message(n: i64) -> Message {
         Message {
+            video: None,
             photo: None,
             id: id(n),
             chat: ChatId(1),

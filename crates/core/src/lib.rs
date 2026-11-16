@@ -21,3 +21,5 @@ pub use secret::Secret;
 
 mod attention;
 pub use attention::{Notification, ReadBatches};
+mod video;
+pub use video::{Video, VideoRect, VideoRequest, VideoState};

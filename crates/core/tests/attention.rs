@@ -68,6 +68,7 @@ fn chat() -> tg_core::Chat {
 }
 fn message() -> tg_core::Message {
     tg_core::Message {
+        video: None,
         id: MessageId(2097152),
         chat: ChatId(7),
         date: 1,

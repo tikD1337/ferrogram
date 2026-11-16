@@ -7,6 +7,7 @@ pub(crate) struct Options {
     pub snapshot: Option<PathBuf>,
     pub help: bool,
     pub demo_scroll: Option<u32>,
+    pub demo_video: Option<u32>,
 }
 impl Options {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, &'static str> {
@@ -28,6 +29,15 @@ impl Options {
                         .ok_or("--demo-scroll requires 1..86400 seconds")?;
                     options.demo = true;
                     options.demo_scroll = Some(seconds);
+                }
+                "--demo-video" => {
+                    let seconds = args
+                        .next()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .filter(|s| (2..=86400).contains(s))
+                        .ok_or("--demo-video requires 2..86400 seconds")?;
+                    options.demo = true;
+                    options.demo_video = Some(seconds);
                 }
                 "--theme" => match args.next().as_deref() {
                     Some("dark") => options.oled = false,

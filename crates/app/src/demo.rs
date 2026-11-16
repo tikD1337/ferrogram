@@ -89,9 +89,15 @@ impl Demo {
         match command {
             Command::DownloadFile(id) => {
                 // A bounded file notification uses the same domain path as updateFile.
+                // Video files have their own ID range and come from the demo clip.
+                let path = if id >= VIDEO_FILE_ID {
+                    self.media_path.with_extension("mp4")
+                } else {
+                    self.media_path.clone()
+                };
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
                     id,
-                    path: Some(self.media_path.clone()),
+                    path: Some(path),
                 }));
             }
             Command::CancelDownload(_) => {}
@@ -163,6 +169,7 @@ impl Demo {
             Command::SendText { chat, text } => {
                 self.sent += 1;
                 sink.post(Event::NewMessage(Message {
+                    video: None,
                     photo: None,
                     id: MessageId(self.sent * 1048576),
                     chat,
@@ -191,6 +198,7 @@ impl Demo {
             .spawn(move || {
                 std::thread::sleep(Duration::from_secs(3));
                 let message = Message {
+                    video: None,
                     chat: ChatId(3),
                     id: MessageId(20001 * 1048576),
                     date: BASE_DATE + 20001 * 60,
@@ -272,7 +280,18 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
             let n = message.id.0 / 1048576;
             match n % 20 {
                 0 => {
-                    message.text = "Video".into();
+                    // A synthetic 4-second clip with the demo photo as its preview frame.
+                    let mut preview = demo_photo((100000 + n) as i32);
+                    (preview.width, preview.height) = (426, 240);
+                    message.photo = Some(preview);
+                    message.video = Some(tg_core::Video {
+                        file: tg_core::MediaFile {
+                            id: VIDEO_FILE_ID + n as i32,
+                            path: None,
+                        },
+                        duration: 4,
+                    });
+                    message.text = String::new();
                     message.entities.clear();
                 }
                 // Albums of 2, 3 and 4 photos with the caption on the first item, like Telegram.
@@ -319,10 +338,17 @@ fn demo_photo(id: i32) -> tg_core::Photo {
         minithumbnail: include_bytes!("../assets/demo-mini.jpg").to_vec(),
     }
 }
-/// Called by the startup worker. One fixed synthetic JPEG per process, no account data.
+/// First file ID of synthetic videos; photo IDs stay below it.
+const VIDEO_FILE_ID: i32 = 1_000_000;
+/// Called by the startup worker. One synthetic JPEG and one synthetic MP4 (the same name with
+/// another extension) per process, no account data.
 pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
     let path = std::env::temp_dir().join(format!("ferrogram-demo-{}.jpg", std::process::id()));
     std::fs::write(&path, include_bytes!("../assets/demo-photo.jpg"))?;
+    std::fs::write(
+        path.with_extension("mp4"),
+        include_bytes!("../assets/demo-video.mp4"),
+    )?;
     Ok(path)
 }
 fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
@@ -352,7 +378,7 @@ fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
         for entity in &mut entities { entity.offset+=prefix.len() as u32; }
         let outgoing = id % 3 == 0;
         let sender_id = if outgoing { 0 } else { 1000 + (id / 4) % 3 };
-        Message { album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
+        Message { video: None, album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
     }).collect();
     if newer {
         Event::NewerMessagesLoaded {

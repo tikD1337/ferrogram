@@ -6,7 +6,7 @@ use tg_core::{
     AuthState, ChatId, CommandError, CommandKind, EntityKind, Event, Message, MessageId, SendState,
     TextEntity,
 };
-use tg_core::{MediaFile, Photo};
+use tg_core::{MediaFile, Photo, Video};
 
 use crate::chats::Chats;
 
@@ -170,15 +170,17 @@ pub(crate) fn message(
     chats: &Chats,
 ) -> Result<Option<Message>, CommandError> {
     let content = &value["content"];
-    let photo = if content["@type"] == "messagePhoto" {
-        photo(&content["photo"])?
-    } else {
-        None
+    let (photo, video) = match content["@type"].as_str() {
+        Some("messagePhoto") => (photo(&content["photo"])?, None),
+        Some("messageVideo") => video(content)?,
+        _ => (None, None),
     };
     let placeholder = serde_json::json!({"text": content_label(content), "entities": []});
     let formatted = match content["@type"].as_str() {
         Some("messageText") => &content["text"],
-        Some("messagePhoto") if !content["caption"].is_null() => &content["caption"],
+        Some("messagePhoto" | "messageVideo") if !content["caption"].is_null() => {
+            &content["caption"]
+        }
         _ => &placeholder,
     };
     let text = string(&formatted["text"], MAX_TEXT_BYTES)?;
@@ -247,6 +249,7 @@ pub(crate) fn message(
         integer(&value["media_album_id"])?
     };
     Ok(Some(Message {
+        video,
         photo,
         id: MessageId(integer(&value["id"])?),
         chat,
@@ -490,6 +493,43 @@ pub(crate) fn avatar(value: &Value) -> Result<Option<Photo>, CommandError> {
         height: 160,
         minithumbnail: mini(&value["minithumbnail"])?,
     }))
+}
+/// Video file plus a JPEG preview frame: the custom cover if any, else the JPEG thumbnail.
+/// The preview carries the video's own size so the feed lays it out at the right aspect ratio.
+fn video(content: &Value) -> Result<(Option<Photo>, Option<Video>), CommandError> {
+    let value = &content["video"];
+    let size = |key: &str| {
+        value[key]
+            .as_u64()
+            .filter(|n| (1..=8192).contains(n))
+            .map_or(1, |n| n as u16)
+    };
+    let (width, height) = (size("width"), size("height"));
+    let thumbnail = &value["thumbnail"];
+    let preview = if let Some(cover) = photo(&content["cover"])? {
+        Some(cover)
+    } else if thumbnail["format"]["@type"] == "thumbnailFormatJpeg" {
+        Some(Photo {
+            file: media_file(&thumbnail["file"])?,
+            width,
+            height,
+            minithumbnail: mini(&value["minithumbnail"])?,
+        })
+    } else {
+        // No decodable preview: the feed draws a dark cell with a play button.
+        None
+    };
+    let duration = value["duration"]
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0);
+    Ok((
+        preview,
+        Some(Video {
+            file: media_file(&value["video"])?,
+            duration,
+        }),
+    ))
 }
 fn photo(value: &Value) -> Result<Option<Photo>, CommandError> {
     let Some(sizes) = value["sizes"].as_array() else {
