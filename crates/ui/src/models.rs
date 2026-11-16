@@ -352,7 +352,7 @@ impl Feed {
                     cache.retain(|row| row.key != keys[i]);
                     let (row, cells) = self.render(&history.messages[groups[i].clone()], &context);
                     rendered = true;
-                    geometry.rows[i].1 = row.height;
+                    geometry.measure(i, row.height);
                     cache.push(Cached {
                         key: keys[i],
                         context,
@@ -386,7 +386,7 @@ impl Feed {
         let mut bytes = 0_usize;
         let mut visible = self.visible.borrow_mut();
         let scale = self.scale.get();
-        for &(id, h) in &geometry.rows {
+        for &(id, h, _) in &geometry.rows {
             if y + h > top
                 && y < top + height
                 && visible.len() < 64
