@@ -124,6 +124,7 @@ export component AppWindow inherits Window {
     out property <bool> chat-near-end: root.chats.length * 62px + root.chat-y < root.chat-height * 3;
     in property <bool> at-newest: true;
     callback viewport-changed();
+    callback wheel(delta: length);
     callback chat-viewport-changed();
     callback media-ready();
     changed chat-y => { root.chat-viewport-changed(); }
@@ -138,22 +139,9 @@ export component AppWindow inherits Window {
     callback auth-submit();
     callback request-qr();
     callback open-chat(index: int);
-    // Video player. The video itself is drawn by a native child window over the area above
-    // the control bar; the Rust side places it from the window size and the bar height.
+    // Opens the video of a feed cell in the separate media viewer window.
     callback open-video(row: int, cell: int);
-    callback player-toggle();
-    callback player-seek(fraction: float);
-    callback player-close();
-    callback player-area-changed();
-    in property <bool> player-open;
-    in property <bool> player-loading;
-    in property <bool> player-playing;
-    in property <bool> player-failed;
-    in property <float> player-progress;
-    in property <string> player-time;
-    out property <length> player-bar: 64px;
-    changed width => { root.player-area-changed(); }
-    changed height => { root.player-area-changed(); }
+
     callback load-chats();
     callback send();
     callback logout();
@@ -297,12 +285,21 @@ export component AppWindow inherits Window {
                     feed-area := Rectangle {
                         clip: true;
                         changed height => { root.feed-height = self.height; root.viewport-changed(); }
+                        wheel-area := TouchArea {
+                            width: parent.width; height: parent.height;
+                            scroll-event(event) => {
+                                if root.blocked { return reject; }
+                                root.wheel(event.delta-y);
+                                return accept;
+                            }
                         feed := Flickable {
                             width: parent.width; height: parent.height;
                             content-width: self.width;
                             content-height: max(self.height, root.feed-content-height);
                             content-y <=> root.feed-y;
-                            interactive: !root.blocked;
+                            // Wheel and touchpad scrolling run in Rust (see State::wheel): Slint's
+                            // own wheel animation keeps its old target when a page is prepended.
+                            interactive: false;
                             changed content-y => { root.viewport-changed(); }
                             for msg[row] in root.messages: Rectangle {
                                 // Rows sit at the bottom when the history is shorter than the view.
@@ -404,6 +401,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                        }
                         if !root.chat-open: Rectangle {
                             width: empty-text.preferred-width + 28px; height: 28px; border-radius: 14px; background: Theme.date;
                             empty-text := Text { text: "Select a chat to start messaging"; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
@@ -498,51 +496,74 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.player-open: Rectangle {
-        x: 0px; y: 0px; width: root.width; height: root.height; background: #000000;
-        TouchArea { }
+
+}
+
+// Media viewer: a separate window, as in Telegram Desktop. The video is drawn by a native child
+// window over the area above the control bar; the Rust side places it from this window's size.
+export component MediaViewer inherits Window {
+    title: "Ferrogram - Media viewer";
+    icon: @image-url("icon.png");
+    background: #000000;
+    preferred-width: 960px;
+    preferred-height: 600px;
+    min-width: 480px;
+    min-height: 320px;
+    default-font-family: "Segoe UI";
+    in property <bool> loading;
+    in property <bool> playing;
+    in property <bool> failed;
+    in property <float> progress;
+    in property <string> time;
+    out property <length> bar: 64px;
+    callback toggle();
+    callback seek(fraction: float);
+    callback dismiss();
+    callback area-changed();
+    changed width => { root.area-changed(); }
+    changed height => { root.area-changed(); }
+
         FocusScope {
             init => { self.focus(); }
             key-pressed(event) => {
-                if event.text == Key.Escape { root.player-close(); return accept; }
-                if event.text == " " { root.player-toggle(); return accept; }
+                if event.text == Key.Escape { root.dismiss(); return accept; }
+                if event.text == " " { root.toggle(); return accept; }
                 return reject;
             }
         }
-        if root.player-loading || root.player-failed: Text {
-            width: parent.width; height: parent.height - root.player-bar;
-            text: root.player-failed ? "This video cannot be played." : "Loading video...";
+        if root.loading || root.failed: Text {
+            width: parent.width; height: parent.height - root.bar;
+            text: root.failed ? "This video cannot be played." : "Loading video...";
             color: #ffffffb0; font-size: 15px; horizontal-alignment: center; vertical-alignment: center;
         }
         Rectangle {
-            y: parent.height - root.player-bar; height: root.player-bar; background: Theme.panel;
+            y: parent.height - root.bar; height: root.bar; background: Theme.panel;
             Rectangle {
                 x: 14px; y: 12px; width: 40px; height: 40px; border-radius: 20px;
                 background: toggle-touch.has-hover ? Theme.hover : transparent;
-                if root.player-playing: Path { x: 13px; y: 11px; width: 14px; height: 18px; viewbox-width: 14; viewbox-height: 18; fill: #ffffff; commands: "M0 0 L5 0 L5 18 L0 18 Z M9 0 L14 0 L14 18 L9 18 Z"; }
-                if !root.player-playing: Path { x: 14px; y: 11px; width: 15px; height: 18px; viewbox-width: 15; viewbox-height: 18; fill: #ffffff; commands: "M0 0 L15 9 L0 18 Z"; }
-                toggle-touch := TouchArea { clicked => { root.player-toggle(); } }
+                if root.playing: Path { x: 13px; y: 11px; width: 14px; height: 18px; viewbox-width: 14; viewbox-height: 18; fill: #ffffff; commands: "M0 0 L5 0 L5 18 L0 18 Z M9 0 L14 0 L14 18 L9 18 Z"; }
+                if !root.playing: Path { x: 14px; y: 11px; width: 15px; height: 18px; viewbox-width: 15; viewbox-height: 18; fill: #ffffff; commands: "M0 0 L15 9 L0 18 Z"; }
+                toggle-touch := TouchArea { clicked => { root.toggle(); } }
             }
             seek := Rectangle {
                 x: 70px; y: 16px; width: parent.width - 70px - 170px; height: 32px;
                 Rectangle { y: 14px; height: 4px; border-radius: 2px; background: #ffffff30; }
-                Rectangle { y: 14px; height: 4px; border-radius: 2px; background: Theme.accent; width: parent.width * clamp(root.player-progress, 0, 1); }
+                Rectangle { x: 0px; y: 14px; height: 4px; border-radius: 2px; background: Theme.accent; width: parent.width * clamp(root.progress, 0, 1); }
                 Rectangle {
-                    x: parent.width * clamp(root.player-progress, 0, 1) - 6px; y: 10px; width: 12px; height: 12px; border-radius: 6px;
+                    x: parent.width * clamp(root.progress, 0, 1) - 6px; y: 10px; width: 12px; height: 12px; border-radius: 6px;
                     background: #ffffff; visible: seek-touch.has-hover;
                 }
-                seek-touch := TouchArea { clicked => { root.player-seek(self.mouse-x / self.width); } }
+                seek-touch := TouchArea { clicked => { root.seek(self.mouse-x / self.width); } }
             }
             Text {
-                x: parent.width - 160px; width: 100px; height: parent.height; text: root.player-time;
+                x: parent.width - 160px; width: 100px; height: parent.height; text: root.time;
                 color: Theme.muted; font-size: 13px; horizontal-alignment: right; vertical-alignment: center;
             }
             Rectangle {
                 x: parent.width - 52px; y: 12px; width: 40px; height: 40px; border-radius: 20px;
                 background: close-touch.has-hover ? Theme.hover : transparent;
                 Path { x: 13px; y: 13px; width: 14px; height: 14px; viewbox-width: 14; viewbox-height: 14; stroke: #ffffff; stroke-width: 2px; fill: transparent; commands: "M1 1 L13 13 M13 1 L1 13"; }
-                close-touch := TouchArea { clicked => { root.player-close(); } }
+                close-touch := TouchArea { clicked => { root.dismiss(); } }
             }
         }
     }
-}

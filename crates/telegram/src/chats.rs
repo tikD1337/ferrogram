@@ -116,9 +116,12 @@ fn preview(value: &Value) -> Result<Option<MessagePreview>, CommandError> {
         return Ok(None);
     }
     let content = &value["content"];
+    // A photo, video or album item without a caption has an empty caption, not a missing one:
+    // show the content label ("Photo") instead of an empty line, as Telegram does.
     let text = content["text"]["text"]
         .as_str()
         .or_else(|| content["caption"]["text"].as_str())
+        .filter(|text| !text.is_empty())
         .unwrap_or_else(|| crate::mapping::content_label(content));
     let mut end = text.len().min(MAX_PREVIEW_BYTES);
     while !text.is_char_boundary(end) {

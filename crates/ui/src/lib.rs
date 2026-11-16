@@ -32,7 +32,7 @@ mod generated {
     #![allow(missing_debug_implementations, clippy::unwrap_used, clippy::todo)]
     slint::include_modules!();
 }
-use generated::{AppWindow, ChatRow, MessageRow, PhotoCell, Theme};
+use generated::{AppWindow, ChatRow, MediaViewer, MessageRow, PhotoCell, Theme};
 
 #[derive(Debug, Default)]
 pub struct Options {
@@ -61,15 +61,19 @@ struct State {
     video: RefCell<VideoFn>,
     /// The video in the player: its TDLib file ID and the local path once downloaded.
     playing: RefCell<Option<(i32, Option<PathBuf>)>>,
+    viewer: MediaViewer,
+    /// Feed position (from the top) that wheel scrolling eases towards, if any.
+    scroll_target: Cell<Option<f32>>,
+    scroll_timer: slint::Timer,
     total_unread: Cell<Option<u32>>,
     // Seek the actual oldest edge for an entirely unread chat (TDLib has no oldest sentinel).
     seek_start: Cell<bool>,
 }
 impl State {
-    /// Physical-pixel area above the player's control bar.
-    fn video_rect(window: &AppWindow) -> VideoRect {
-        let size = window.window().size();
-        let bar = (window.get_player_bar() * window.window().scale_factor()).round() as i32;
+    /// Physical-pixel area of the media viewer above its control bar.
+    fn video_rect(viewer: &MediaViewer) -> VideoRect {
+        let size = viewer.window().size();
+        let bar = (viewer.get_bar() * viewer.window().scale_factor()).round() as i32;
         VideoRect {
             x: 0,
             y: 0,
@@ -79,18 +83,18 @@ impl State {
     }
     fn video(&self, window: &AppWindow, request: VideoRequest) {
         if let Err(error) = (self.video.borrow())(request) {
-            window.set_player_loading(false);
-            window.set_player_failed(true);
+            self.viewer.set_loading(false);
+            self.viewer.set_failed(true);
             window.set_error(error.message.into());
         }
     }
     fn start_video(&self, window: &AppWindow, path: PathBuf) {
-        window.set_player_loading(false);
-        let Some(handle) = native_window(window) else {
-            window.set_player_failed(true);
+        self.viewer.set_loading(false);
+        let Some(handle) = native_window(self.viewer.window()) else {
+            self.viewer.set_failed(true);
             return;
         };
-        let rect = Self::video_rect(window);
+        let rect = Self::video_rect(&self.viewer);
         self.video(
             window,
             VideoRequest::Open {
@@ -107,20 +111,25 @@ impl State {
     }
     fn play(&self, window: &AppWindow, video: tg_core::Video) {
         self.close_video(window);
-        window.set_player_open(true);
-        window.set_player_failed(false);
-        window.set_player_playing(false);
-        window.set_player_progress(0.0);
-        window.set_player_time(format!("0:00 / {}", clock::duration(video.duration)).into());
+        self.viewer.set_failed(false);
+        self.viewer.set_playing(false);
+        self.viewer.set_progress(0.0);
+        self.viewer
+            .set_time(format!("0:00 / {}", clock::duration(video.duration)).into());
+        // The native window must exist before the player can attach its child window.
+        if self.viewer.show().is_err() {
+            window.set_error("Could not open the media viewer.".into());
+            return;
+        }
         *self.playing.borrow_mut() = Some((video.file.id, video.file.path.clone()));
         if let Some(path) = video.file.path {
             self.start_video(window, path);
         } else {
-            window.set_player_loading(true);
+            self.viewer.set_loading(true);
             // Downloaded completely before playback; streaming is a later step.
             if !self.send(window, Command::DownloadFile(video.file.id)) {
-                window.set_player_loading(false);
-                window.set_player_failed(true);
+                self.viewer.set_loading(false);
+                self.viewer.set_failed(true);
             }
         }
     }
@@ -131,8 +140,45 @@ impl State {
             }
             self.video(window, VideoRequest::Close);
         }
-        window.set_player_open(false);
-        window.set_player_loading(false);
+        let _ = self.viewer.hide();
+        self.viewer.set_loading(false);
+    }
+    /// Wheel and touchpad scrolling: the target position eases in on a short-lived timer, which
+    /// runs only while a scroll is in progress. `refresh` moves the target together with the
+    /// content when pages are added or dropped, so the feed never overshoots.
+    fn wheel(self: &Rc<Self>, window: &AppWindow, delta: f32) {
+        let max = (window.get_feed_content_height() - window.get_feed_height()).max(0.0);
+        let current = -window.get_feed_y();
+        let target = (self.scroll_target.get().unwrap_or(current) - delta).clamp(0.0, max);
+        self.scroll_target.set(Some(target));
+        if self.scroll_timer.running() {
+            return;
+        }
+        let weak = window.as_weak();
+        let state = Rc::downgrade(self);
+        self.scroll_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(16),
+            move || {
+                let (Some(w), Some(s)) = (weak.upgrade(), state.upgrade()) else {
+                    return;
+                };
+                let Some(target) = s.scroll_target.get() else {
+                    s.scroll_timer.stop();
+                    return;
+                };
+                let current = -w.get_feed_y();
+                let distance = target - current;
+                if distance.abs() < 0.5 {
+                    s.scroll_target.set(None);
+                    s.scroll_timer.stop();
+                    w.set_feed_y(-target);
+                } else {
+                    // About 120 ms to cover most of the distance, as smooth wheel scrolling does.
+                    w.set_feed_y(-(current + distance * 0.35));
+                }
+            },
+        );
     }
     fn send(&self, window: &AppWindow, command: Command) -> bool {
         if window.get_blocked() {
@@ -164,11 +210,16 @@ impl State {
             self.start_highlight(window);
         }
         let height = window.get_feed_height().max(1.0);
-        let (top, total) = self.feed.layout(
-            (-window.get_feed_y()).max(0.0),
-            height,
-            window.get_follow_tail(),
-        );
+        let requested = (-window.get_feed_y()).max(0.0);
+        let (top, total) = self
+            .feed
+            .layout(requested, height, window.get_follow_tail());
+        if let Some(target) = self.scroll_target.get() {
+            // Rows added or dropped above moved the content: move the wheel target with it.
+            let max = (total - height).max(0.0);
+            self.scroll_target
+                .set(Some((target + top - requested).clamp(0.0, max)));
+        }
         window.set_feed_content_height(total);
         window.set_feed_y(-top);
         window.set_at_newest(self.feed.history.borrow().at_tail());
@@ -560,18 +611,19 @@ impl State {
                 };
                 self.media.borrow_mut().file(file);
                 if let Some(path) = ready
-                    && window.get_player_open()
+                    && self.viewer.window().is_visible()
                 {
                     self.start_video(window, path);
                 }
             }
             Event::VideoState(state) => {
-                if window.get_player_open() {
+                if self.viewer.window().is_visible() {
                     let duration = state.duration_ms.max(1);
-                    window.set_player_playing(state.playing);
-                    window.set_player_failed(state.failed);
-                    window.set_player_progress(state.position_ms as f32 / duration as f32);
-                    window.set_player_time(
+                    self.viewer.set_playing(state.playing);
+                    self.viewer.set_failed(state.failed);
+                    self.viewer
+                        .set_progress(state.position_ms as f32 / duration as f32);
+                    self.viewer.set_time(
                         format!(
                             "{} / {}",
                             clock::duration(state.position_ms / 1000),
@@ -704,10 +756,10 @@ impl State {
 }
 /// Header avatar size in logical pixels; app.slint uses the same value.
 const HEADER_AVATAR: f32 = 38.0;
-/// The Win32 handle of the main window, for the player's child window.
-fn native_window(window: &AppWindow) -> Option<isize> {
+/// The Win32 handle of a window, for the player's child window.
+fn native_window(window: &slint::Window) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let handle = window.window().window_handle();
+    let handle = window.window_handle();
     match handle.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
         _ => None,
@@ -785,6 +837,9 @@ impl Ui {
                 })
             })),
             playing: RefCell::default(),
+            viewer: MediaViewer::new()?,
+            scroll_target: Cell::new(None),
+            scroll_timer: slint::Timer::default(),
             total_unread: Cell::new(None),
             seek_start: Cell::new(false),
         });
@@ -851,35 +906,51 @@ impl Ui {
                 s.open_video(&w, row.max(0) as usize, cell.max(0) as usize);
             }
         });
-        let weak = window.as_weak();
+        let viewer = state.viewer.as_weak();
         let s = state.clone();
-        window.on_player_toggle(move || {
-            if let Some(w) = weak.upgrade() {
+        let main = window.as_weak();
+        state.viewer.on_toggle(move || {
+            if let Some(w) = main.upgrade() {
                 s.video(&w, VideoRequest::TogglePause);
             }
         });
-        let weak = window.as_weak();
         let s = state.clone();
-        window.on_player_seek(move |fraction| {
-            if let Some(w) = weak.upgrade() {
+        let main = window.as_weak();
+        state.viewer.on_seek(move |fraction| {
+            if let Some(w) = main.upgrade() {
                 s.video(&w, VideoRequest::Seek(f64::from(fraction)));
             }
         });
-        let weak = window.as_weak();
         let s = state.clone();
-        window.on_player_close(move || {
-            if let Some(w) = weak.upgrade() {
+        let main = window.as_weak();
+        state.viewer.on_dismiss(move || {
+            if let Some(w) = main.upgrade() {
                 s.close_video(&w);
+            }
+        });
+        let s = state.clone();
+        let main = window.as_weak();
+        state.viewer.window().on_close_requested(move || {
+            if let Some(w) = main.upgrade() {
+                s.close_video(&w);
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+        let s = state.clone();
+        let main = window.as_weak();
+        state.viewer.on_area_changed(move || {
+            if let (Some(w), Some(v)) = (main.upgrade(), viewer.upgrade())
+                && v.window().is_visible()
+                && s.playing.borrow().as_ref().is_some_and(|p| p.1.is_some())
+            {
+                s.video(&w, VideoRequest::Move(State::video_rect(&v)));
             }
         });
         let weak = window.as_weak();
         let s = state.clone();
-        window.on_player_area_changed(move || {
-            if let Some(w) = weak.upgrade()
-                && w.get_player_open()
-                && s.playing.borrow().as_ref().is_some_and(|p| p.1.is_some())
-            {
-                s.video(&w, VideoRequest::Move(State::video_rect(&w)));
+        window.on_wheel(move |delta| {
+            if let Some(w) = weak.upgrade() {
+                s.wheel(&w, delta);
             }
         });
         let weak = window.as_weak();
@@ -943,6 +1014,7 @@ impl Ui {
         let s = state.clone();
         window.on_latest(move || {
             if let Some(w) = weak.upgrade() {
+                s.scroll_target.set(None);
                 s.seek_start.set(false);
                 s.feed.jump_unread.set(false);
                 if s.feed.history.borrow().at_tail() {

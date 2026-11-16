@@ -567,3 +567,18 @@ fn replied_message_resolves_names_without_a_retained_engine_history() {
         matches!(&events[0],Event::ReplyResolved {reply:Some(r),..} if r.sender=="You" && r.preview=="Original message" && r.resolved)
     );
 }
+
+#[test]
+fn media_without_caption_previews_its_label_not_an_empty_line() {
+    let events = decode(
+        &mut Decoder::default(),
+        r#"{"@type":"updateNewChat","chat":{"id":1,"title":"Channel","last_message":{"id":1048576,"date":1,"is_outgoing":false,"content":{"@type":"messagePhoto","caption":{"text":"","entities":[]}}},"positions":[{"list":{"@type":"chatListMain"},"order":"100"}]}}"#,
+    );
+    let Event::ChatListChanged(ChatListChange::Insert { chat, .. }) = &events[0] else {
+        panic!("chat row")
+    };
+    assert_eq!(
+        chat.last_message.as_ref().map(|m| m.text.as_str()),
+        Some("Photo")
+    );
+}
