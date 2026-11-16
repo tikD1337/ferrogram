@@ -7,6 +7,7 @@
 **A native Telegram client for Windows that stays light.**<br>
 Written in Rust. About 8× less memory than Telegram Desktop, measured.
 
+[![CI](https://github.com/tikD1337/ferrogram/actions/workflows/ci.yml/badge.svg)](https://github.com/tikD1337/ferrogram/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-17212B?style=flat-square&logo=windows&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-1.100-D9822B?style=flat-square&logo=rust&logoColor=white)
 ![UI](https://img.shields.io/badge/UI-Slint-3E88C7?style=flat-square)
@@ -166,6 +167,10 @@ Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHIT
 
 <details>
 <summary><b>🛠️ Development checks</b></summary>
+
+Every push to `main` and every pull request runs these checks on Windows in
+[GitHub Actions](https://github.com/tikD1337/ferrogram/actions), plus a release build and a
+demo smoke test. Tests that need a real TPM or an installed TDLib are skipped there.
 
 ```powershell
 cargo fmt --all -- --check
