@@ -10,6 +10,7 @@ mod demo_backend;
 
 fn fixture(n: i64) -> tg_core::Message {
     tg_core::Message {
+        video: None,
         id: MessageId(n * 1048576),
         chat: tg_core::ChatId(7),
         date: 1793620800 + n as i32 * 60,

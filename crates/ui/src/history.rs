@@ -179,6 +179,7 @@ mod tests {
             edited: false,
             is_text: true,
             permissions: None,
+            video: None,
             photo: None,
             id: id(n),
             chat: ChatId(1),

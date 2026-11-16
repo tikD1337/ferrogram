@@ -302,12 +302,41 @@ fn newer_page_filters_anchor_and_uses_maximum_raw_id_for_cursor() {
 fn unsupported_content_is_a_visible_row() {
     let events = decode(
         &mut Decoder::default(),
-        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageVideo"}}}"#,
+        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageSticker"}}}"#,
     );
     let (Event::NewMessage(message) | Event::IncomingMessage(message)) = &events[0] else {
         panic!("placeholder row")
     };
-    assert_eq!(message.text, "Video");
+    assert_eq!(message.text, "Sticker");
+}
+
+#[test]
+fn video_maps_file_duration_caption_and_jpeg_preview() {
+    let events = decode(
+        &mut Decoder::default(),
+        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageVideo","cover":null,"caption":{"text":"Clip","entities":[]},"video":{"duration":75,"width":1280,"height":720,"minithumbnail":null,"thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"width":320,"height":180,"file":{"id":11,"local":{"is_downloading_completed":false}}},"video":{"id":12,"local":{"is_downloading_completed":false}}}}}}"#,
+    );
+    let (Event::NewMessage(message) | Event::IncomingMessage(message)) = &events[0] else {
+        panic!("video row")
+    };
+    let video = message.video.as_ref().expect("video");
+    assert_eq!((video.file.id, video.duration), (12, 75));
+    let preview = message.photo.as_ref().expect("preview");
+    assert_eq!(
+        (preview.file.id, preview.width, preview.height),
+        (11, 1280, 720)
+    );
+    assert_eq!(message.text, "Clip");
+    // An MPEG-4 thumbnail cannot be decoded: no preview frame, the video stays playable.
+    let events = decode(
+        &mut Decoder::default(),
+        r#"{"@type":"updateNewMessage","message":{"id":105906176,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageVideo","cover":null,"caption":{"text":"","entities":[]},"video":{"duration":5,"width":640,"height":360,"minithumbnail":null,"thumbnail":{"format":{"@type":"thumbnailFormatMpeg4"},"width":320,"height":180,"file":{"id":13,"local":{"is_downloading_completed":false}}},"video":{"id":14,"local":{"is_downloading_completed":false}}}}}}"#,
+    );
+    let (Event::NewMessage(message) | Event::IncomingMessage(message)) = &events[0] else {
+        panic!("video row")
+    };
+    assert!(message.photo.is_none());
+    assert_eq!(message.video.as_ref().map(|v| v.file.id), Some(14));
 }
 
 #[test]

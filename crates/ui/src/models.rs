@@ -418,12 +418,12 @@ impl Feed {
         let scale = self.scale.get().clamp(0.5, 4.0);
         let max_width = self.width.get().clamp(80.0, 504.0);
         let (first, last) = (&group[0], &group[group.len() - 1]);
-        let media = group.len() > 1 || first.photo.is_some();
+        let media = group.len() > 1 || first.photo.is_some() || first.video.is_some();
         // An album shows one caption: the first photo caption that is not empty.
         let caption = if media {
             group
                 .iter()
-                .find(|m| m.photo.is_some() && !m.text.is_empty())
+                .find(|m| (m.photo.is_some() || m.video.is_some()) && !m.text.is_empty())
         } else {
             Some(first)
         };
@@ -431,9 +431,12 @@ impl Feed {
             group
                 .iter()
                 .map(|m| {
-                    m.photo
-                        .as_ref()
-                        .map_or((4.0, 3.0), |p| (f32::from(p.width), f32::from(p.height)))
+                    match (&m.photo, &m.video) {
+                        (Some(p), _) => (f32::from(p.width), f32::from(p.height)),
+                        // A video without a preview frame: a 16:9 cell with a play button.
+                        (None, Some(_)) => (16.0, 9.0),
+                        (None, None) => (4.0, 3.0),
+                    }
                 })
                 .collect()
         } else {
@@ -541,7 +544,7 @@ impl Feed {
             .zip(&frames)
             .map(|(m, f)| PhotoCell {
                 image: Image::default(),
-                label: if m.photo.is_some() {
+                label: if m.photo.is_some() || m.video.is_some() {
                     Default::default()
                 } else {
                     m.text.as_str().into()
@@ -550,6 +553,12 @@ impl Feed {
                 y: f[1],
                 width: f[2],
                 height: f[3],
+                video: m.video.is_some(),
+                duration: m
+                    .video
+                    .as_ref()
+                    .map_or_else(String::new, |v| clock::duration(v.duration))
+                    .into(),
             })
             .collect();
         let rendered = text.map_or_else(Image::default, |t| {
@@ -698,6 +707,21 @@ impl Feed {
             .find(|m| m.id == id)
             .and_then(|m| m.photo.clone())
     }
+    /// Demo measurements: the newest video in the loaded window.
+    pub fn newest_video(&self) -> Option<tg_core::Video> {
+        let history = self.history.borrow();
+        history.messages.iter().rev().find_map(|m| m.video.clone())
+    }
+    /// The video behind a clicked cell of a visible row.
+    pub fn video_at(&self, row: usize, cell: usize) -> Option<tg_core::Video> {
+        let id = self.visible.borrow().get(row)?.cells.get(cell)?.0;
+        self.history
+            .borrow()
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.video.clone())
+    }
     pub fn media_requests(&self) -> Vec<(Key, tg_core::Photo)> {
         let scale = self.scale.get();
         self.visible
@@ -829,6 +853,7 @@ mod feed_tests {
             edited: false,
             is_text: true,
             permissions: None,
+            video: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
                 file: tg_core::MediaFile {
                     id: n as i32,
@@ -1097,6 +1122,7 @@ mod action_tests {
     use super::*;
     fn message(n: i64) -> Message {
         Message {
+            video: None,
             reply: None,
             forwarded: None,
             edited: false,

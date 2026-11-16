@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     edited: false,
                     is_text: true,
                     permissions: None,
+                    video: None,
                     id: tg_core::MessageId(104857600),
                     chat: tg_core::ChatId(7),
                     date: 43200,

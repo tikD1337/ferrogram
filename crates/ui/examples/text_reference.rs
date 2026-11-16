@@ -64,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             edited: false,
             is_text: true,
             permissions: None,
+            video: None,
             id: MessageId(1048576),
             chat: ChatId(1),
             date: 0,

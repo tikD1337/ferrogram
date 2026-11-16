@@ -437,6 +437,7 @@ mod tests {
             edited: false,
             is_text: true,
             permissions: None,
+            video: None,
             photo: None,
             id: tg_core::MessageId(1),
             chat: tg_core::ChatId(1),

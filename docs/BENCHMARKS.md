@@ -317,3 +317,24 @@ Slint's GL backend already uses 0.8.9, and 0.9 would add a second copy. TDLib re
 | `--demo-scroll 120`, CPU, % of one core | 10.4 | 9.5 |
 
 The live client with the new TDLib build was not checked yet.
+
+## Video playback in the client (2026-11-16)
+
+The player uses the Media Foundation Media Engine in rendering mode: it decodes, plays the audio
+and presents frames into a native child window, so no frame is copied into the UI. Checked with
+`ferrogram.exe --demo-video 14` (opens the synthetic 426x240 clip, exits after 14 s), from outside
+the process: `MFMediaEngine.dll`, the NVIDIA user-mode driver and the hardware-capable H.264
+decoder `msmpeg2vdec.dll` are loaded; the video child window covers the area above the control bar
+(1040x676 in a 1040x740 window).
+
+| Metric (8 s sample while the player was open) | Value |
+|---|---|
+| Private Bytes | 93.7 MB avg, 94.0 MB max |
+| Private working set | 46.8 MB avg |
+| Threads | 45 avg, 49 max |
+| CPU, % of one core | 1.6 |
+
+The demo clip is 4 s long, so most of the sample is after the clip ended; decoding cost while
+playing was measured by the probe above (5.6-6.5 % of one core for 720p on the GPU). The video
+is downloaded completely before playback; streaming is a later step. Not verified by eye or on
+a live account yet.

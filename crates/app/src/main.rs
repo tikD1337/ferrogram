@@ -48,16 +48,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 snapshot: options.snapshot,
                 emoji_font: font,
                 demo_scroll: options.demo_scroll,
+                demo_video: options.demo_video,
             },
             move |command| commands.borrow_mut().command(command),
         )?;
         backend.borrow_mut().sink = Some(ui.event_sink());
         backend.borrow_mut().seed();
         let notifications = attach_notifications(&ui);
+        let player = attach_video(&ui);
         backend.borrow().schedule_incoming();
         let result = ui.run();
+        drop(player);
         drop(notifications);
-        let _ = std::thread::spawn(move || std::fs::remove_file(media_path)).join();
+        let _ = std::thread::spawn(move || {
+            let _ = std::fs::remove_file(media_path.with_extension("mp4"));
+            std::fs::remove_file(media_path)
+        })
+        .join();
         return result;
     }
     // Pre-window configuration reads are also off the UI thread. No keys or native engine yet.
@@ -80,6 +87,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             snapshot: options.snapshot,
             emoji_font: font,
             demo_scroll: None,
+            demo_video: None,
         },
         move |command| {
             let slot = dispatch
@@ -91,6 +99,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     let notifications = attach_notifications(&ui);
+    let player = attach_video(&ui);
     let sink = ui.event_sink();
     // Authorization can arrive before Engine::start returns. Hold delivery until
     // the handle is installed, otherwise the UI's default QR request can race it.
@@ -138,6 +147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .map_err(|_| "Could not start the lifecycle worker")?;
     let result = ui.run();
+    drop(player);
     drop(notifications);
     let _ = close.try_send(());
     let shutdown = worker.join().map_err(|_| "Lifecycle worker failed")?;
@@ -169,6 +179,22 @@ fn attach_notifications(ui: &Ui) -> Option<Arc<tg_platform::Notifications>> {
             .map_err(|_| failure("Could not show a desktop notification."))
     });
     Some(service)
+}
+
+/// The video player is optional too: without Media Foundation the client keeps running and
+/// the player reports that playback is unavailable.
+fn attach_video(ui: &Ui) -> Option<Rc<tg_platform::Player>> {
+    let events = ui.event_sink();
+    let player = Rc::new(
+        tg_platform::Player::start(move |state| events.post(Event::VideoState(state))).ok()?,
+    );
+    let requests = player.clone();
+    ui.on_video(move |request| {
+        requests
+            .request(request)
+            .map_err(|_| failure("Could not play the video."))
+    });
+    Some(player)
 }
 
 fn failure(message: &str) -> CommandError {

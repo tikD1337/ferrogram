@@ -108,3 +108,11 @@ work, so the client eventually covers what Telegram Desktop offers:
 - "And all that kind of thing": everything else Telegram Desktop has (polls, voice and video
   calls, channels and comments, bots and inline buttons, forwarding, search, pinned messages,
   scheduled messages), each with the same RAM and CPU discipline.
+
+## Progress (2026-11-16): messages and video
+
+- Reply, edit, delete and forward from a context menu, with reply quotes, "edited" marks and
+  forwarded headers.
+- Video playback through the Media Foundation Media Engine (GPU decoding, audio, a native child
+  window), opened from a preview with a play button and the duration. Next for video: play while
+  downloading, GIFs and round video messages, inline autoplay of short muted clips.

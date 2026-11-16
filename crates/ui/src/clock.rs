@@ -44,3 +44,23 @@ pub(crate) fn list_label(date: i32) -> String {
         t.format("%d.%m.%y").to_string()
     }
 }
+
+/// "0:42", "12:05", "1:02:03" for a duration in seconds.
+pub(crate) fn duration(seconds: u32) -> String {
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn durations_use_minutes_and_hours_only_when_needed() {
+        assert_eq!(super::duration(0), "0:00");
+        assert_eq!(super::duration(75), "1:15");
+        assert_eq!(super::duration(3723), "1:02:03");
+    }
+}

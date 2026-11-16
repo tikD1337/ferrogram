@@ -20,7 +20,7 @@ export global Theme {
     out property <color> accent: #6ab3f3;
 }
 export struct ChatRow { avatar: image, initials: string, color: color, title: string, preview: string, time: string, unread: string, mentions: string, muted: bool, selected: bool }
-export struct PhotoCell { image: image, label: string, x: length, y: length, width: length, height: length }
+export struct PhotoCell { image: image, label: string, x: length, y: length, width: length, height: length, video: bool, duration: string }
 // One feed row: a date separator (optional) and one bubble holding a message or an album.
 export struct MessageRow {
     key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
@@ -138,6 +138,22 @@ export component AppWindow inherits Window {
     callback auth-submit();
     callback request-qr();
     callback open-chat(index: int);
+    // Video player. The video itself is drawn by a native child window over the area above
+    // the control bar; the Rust side places it from the window size and the bar height.
+    callback open-video(row: int, cell: int);
+    callback player-toggle();
+    callback player-seek(fraction: float);
+    callback player-close();
+    callback player-area-changed();
+    in property <bool> player-open;
+    in property <bool> player-loading;
+    in property <bool> player-playing;
+    in property <bool> player-failed;
+    in property <float> player-progress;
+    in property <string> player-time;
+    out property <length> player-bar: 64px;
+    changed width => { root.player-area-changed(); }
+    changed height => { root.player-area-changed(); }
     callback load-chats();
     callback send();
     callback logout();
@@ -288,7 +304,7 @@ export component AppWindow inherits Window {
                             content-y <=> root.feed-y;
                             interactive: !root.blocked;
                             changed content-y => { root.viewport-changed(); }
-                            for msg in root.messages: Rectangle {
+                            for msg[row] in root.messages: Rectangle {
                                 // Rows sit at the bottom when the history is shorter than the view.
                                 y: msg.row-y + max(0px, feed.height - root.feed-content-height);
                                 width: feed.width; height: msg.height;
@@ -339,10 +355,24 @@ export component AppWindow inherits Window {
                                         border-top-right-radius: msg.media-y == 0px ? 12px : 0px;
                                         border-bottom-left-radius: msg.media-caption ? 0px : !msg.outgoing && msg.tail ? 4px : 12px;
                                         border-bottom-right-radius: msg.media-caption ? 0px : msg.outgoing && msg.tail ? 4px : 12px;
-                                        for cell in msg.cells: Rectangle {
+                                        for cell[index] in msg.cells: Rectangle {
                                             x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: Theme.field;
                                             Text { text: cell.label; color: Theme.muted; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
                                             Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; }
+                                            if cell.video: Rectangle {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                width: 48px; height: 48px; border-radius: 24px; background: play-touch.has-hover ? #000000a0 : #00000080;
+                                                Path { x: 18px; y: 14px; width: 16px; height: 20px; viewbox-width: 16; viewbox-height: 20; fill: #ffffff; commands: "M0 0 L16 10 L0 20 Z"; }
+                                            }
+                                            if cell.video && cell.duration != "": Rectangle {
+                                                x: 8px; y: 8px; height: 20px; width: duration-text.preferred-width + 14px; border-radius: 10px; background: #00000080;
+                                                duration-text := Text { text: cell.duration; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                            }
+                                            play-touch := TouchArea {
+                                                enabled: cell.video && !root.blocked;
+                                                mouse-cursor: cell.video ? MouseCursor.pointer : MouseCursor.default;
+                                                clicked => { root.open-video(row, index); }
+                                            }
                                         }
                                     }
                                     if msg.text-height > 0px: Image { x: 10px; y: msg.text-y; width: msg.text-width; height: msg.text-height; source: msg.rendered; }
@@ -468,4 +498,51 @@ export component AppWindow inherits Window {
         }
     }
 
+    if root.player-open: Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height; background: #000000;
+        TouchArea { }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.player-close(); return accept; }
+                if event.text == " " { root.player-toggle(); return accept; }
+                return reject;
+            }
+        }
+        if root.player-loading || root.player-failed: Text {
+            width: parent.width; height: parent.height - root.player-bar;
+            text: root.player-failed ? "This video cannot be played." : "Loading video...";
+            color: #ffffffb0; font-size: 15px; horizontal-alignment: center; vertical-alignment: center;
+        }
+        Rectangle {
+            y: parent.height - root.player-bar; height: root.player-bar; background: Theme.panel;
+            Rectangle {
+                x: 14px; y: 12px; width: 40px; height: 40px; border-radius: 20px;
+                background: toggle-touch.has-hover ? Theme.hover : transparent;
+                if root.player-playing: Path { x: 13px; y: 11px; width: 14px; height: 18px; viewbox-width: 14; viewbox-height: 18; fill: #ffffff; commands: "M0 0 L5 0 L5 18 L0 18 Z M9 0 L14 0 L14 18 L9 18 Z"; }
+                if !root.player-playing: Path { x: 14px; y: 11px; width: 15px; height: 18px; viewbox-width: 15; viewbox-height: 18; fill: #ffffff; commands: "M0 0 L15 9 L0 18 Z"; }
+                toggle-touch := TouchArea { clicked => { root.player-toggle(); } }
+            }
+            seek := Rectangle {
+                x: 70px; y: 16px; width: parent.width - 70px - 170px; height: 32px;
+                Rectangle { y: 14px; height: 4px; border-radius: 2px; background: #ffffff30; }
+                Rectangle { y: 14px; height: 4px; border-radius: 2px; background: Theme.accent; width: parent.width * clamp(root.player-progress, 0, 1); }
+                Rectangle {
+                    x: parent.width * clamp(root.player-progress, 0, 1) - 6px; y: 10px; width: 12px; height: 12px; border-radius: 6px;
+                    background: #ffffff; visible: seek-touch.has-hover;
+                }
+                seek-touch := TouchArea { clicked => { root.player-seek(self.mouse-x / self.width); } }
+            }
+            Text {
+                x: parent.width - 160px; width: 100px; height: parent.height; text: root.player-time;
+                color: Theme.muted; font-size: 13px; horizontal-alignment: right; vertical-alignment: center;
+            }
+            Rectangle {
+                x: parent.width - 52px; y: 12px; width: 40px; height: 40px; border-radius: 20px;
+                background: close-touch.has-hover ? Theme.hover : transparent;
+                Path { x: 13px; y: 13px; width: 14px; height: 14px; viewbox-width: 14; viewbox-height: 14; stroke: #ffffff; stroke-width: 2px; fill: transparent; commands: "M1 1 L13 13 M13 1 L1 13"; }
+                close-touch := TouchArea { clicked => { root.player-close(); } }
+            }
+        }
+    }
 }

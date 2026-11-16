@@ -1,8 +1,12 @@
 //! Event-driven Windows tray balloons. No message text is logged.
 #[allow(unsafe_code)]
 mod ffi;
+mod video;
+#[allow(unsafe_code)]
+mod video_ffi;
 use std::sync::mpsc;
 use tg_core::{ChatId, Notification};
+pub use video::Player;
 #[derive(Debug, Clone, Copy)]
 pub struct Error(pub(crate) &'static str, pub(crate) u32);
 impl std::fmt::Display for Error {

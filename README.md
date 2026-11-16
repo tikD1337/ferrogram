@@ -80,6 +80,8 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - [x] Photos with captions, albums as one bubble with a photo grid ¹
 - [x] Date separators, sender names in groups, read checks ¹
 - [x] Sending text messages
+- [x] Reply, edit, delete and forward from a context menu ¹
+- [x] Video playback with GPU decoding (Windows Media Foundation) ¹
 - [x] Desktop notifications that open the chat ¹
 - [x] Night and OLED themes
 
@@ -87,8 +89,8 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 **Not yet** — see the [roadmap](docs/ROADMAP.md)
 
-- [ ] Video (GPU playback is being measured), voice messages, stickers, files
-- [ ] Replies, editing, deleting, forwarding, reactions
+- [ ] Video streaming while downloading, GIFs and round videos
+- [ ] Voice messages, stickers, files, reactions
 - [ ] Search, folders, settings
 - [ ] Calls, channels with comments, bots, polls
 

@@ -12,7 +12,9 @@ workspace = true
 
 [dependencies]
 tg-core = { path = "../core" }
-slint = { version = "=1.19.0", features = ["unstable-winit-030"] }
+slint = { version = "=1.19.0", features = ["unstable-winit-030", "raw-window-handle-06"] }
+# The main window handle for the video player's native child window.
+raw-window-handle = "0.6"
 parley = "=0.12.0"
 swash = "=0.2.10"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }

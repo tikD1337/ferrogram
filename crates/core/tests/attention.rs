@@ -73,6 +73,7 @@ fn message() -> tg_core::Message {
         edited: false,
         is_text: true,
         permissions: None,
+        video: None,
         id: MessageId(2097152),
         chat: ChatId(7),
         date: 1,

@@ -117,6 +117,8 @@ pub struct Message {
     /// Sender display name, only for messages from someone other than the chat itself
     /// (group members); at most 256 bytes.
     pub sender: Option<String>,
+    /// Video file; its preview frame is `photo`.
+    pub video: Option<crate::Video>,
 }
 
 /// Bounded chat-row preview, not a retained message or history cache.
@@ -172,6 +174,8 @@ pub enum SecurityWarning {
 #[non_exhaustive]
 pub enum Event {
     AuthStateChanged(AuthState),
+    /// Playback state of the open video, sent on player events.
+    VideoState(crate::VideoState),
     FileUpdated(MediaFile),
     ChatListChanged(ChatListChange),
     /// False means TDLib reported that the main list is exhausted.

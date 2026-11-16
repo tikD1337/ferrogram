@@ -31,18 +31,20 @@ fn video_type(subtype: &windows::core::GUID, width: u32, height: u32) -> Result<
     }
 }
 
-fn encode(path: &str) -> Result<()> {
+/// `demo`: a small 426x240, 4 s clip without grain and with colour, for the client's demo mode.
+fn encode(path: &str, demo: bool) -> Result<()> {
+    let (width, height, seconds) = if demo { (426, 240, 4) } else { (WIDTH, HEIGHT, SECONDS) };
     unsafe {
         let writer = MFCreateSinkWriterFromURL(&HSTRING::from(path), None, None)?;
-        let output = video_type(&MFVideoFormat_H264, WIDTH, HEIGHT)?;
-        output.SetUINT32(&MF_MT_AVG_BITRATE, 4_000_000)?;
+        let output = video_type(&MFVideoFormat_H264, width, height)?;
+        output.SetUINT32(&MF_MT_AVG_BITRATE, if demo { 150_000 } else { 4_000_000 })?;
         let stream = writer.AddStream(&output)?;
-        let input = video_type(&MFVideoFormat_NV12, WIDTH, HEIGHT)?;
+        let input = video_type(&MFVideoFormat_NV12, width, height)?;
         writer.SetInputMediaType(stream, &input, None)?;
         writer.BeginWriting()?;
-        let size = (WIDTH * HEIGHT * 3 / 2) as usize;
+        let size = (width * height * 3 / 2) as usize;
         let duration = 10_000_000 / i64::from(FPS);
-        for frame in 0..FPS * SECONDS {
+        for frame in 0..FPS * seconds {
             let buffer = MFCreateMemoryBuffer(size as u32)?;
             let mut data = std::ptr::null_mut();
             buffer.Lock(&mut data, None, None)?;
@@ -50,16 +52,26 @@ fn encode(path: &str) -> Result<()> {
             // Moving diagonal gradient in luma, flat chroma: real motion for the encoder.
             // Plus pseudo-random grain, so the bitrate is close to a real 720p clip.
             let mut seed = frame.wrapping_mul(2_654_435_761) | 1;
-            for y in 0..HEIGHT {
-                for x in 0..WIDTH {
+            for y in 0..height {
+                for x in 0..width {
                     seed ^= seed << 13;
                     seed ^= seed >> 17;
                     seed ^= seed << 5;
-                    let grain = (seed % 24) as u32;
-                    pixels[(y * WIDTH + x) as usize] = ((x + y + frame * 8 + grain) % 256) as u8;
+                    let grain = if demo { 0 } else { (seed % 24) as u32 };
+                    pixels[(y * width + x) as usize] = ((x + y + frame * 8 + grain) % 256) as u8;
                 }
             }
-            pixels[(WIDTH * HEIGHT) as usize..].fill(128);
+            let chroma = &mut pixels[(width * height) as usize..];
+            if demo {
+                // Interleaved U/V at half resolution: slowly shifting colour bands.
+                for (i, pair) in chroma.chunks_exact_mut(2).enumerate() {
+                    let x = (i as u32 % (width / 2)) * 2;
+                    pair[0] = (96 + (x + frame * 2) % 64) as u8;
+                    pair[1] = (160 - (x / 2 + frame) % 64) as u8;
+                }
+            } else {
+                chroma.fill(128);
+            }
             buffer.Unlock()?;
             buffer.SetCurrentLength(size as u32)?;
             let sample = MFCreateSample()?;
@@ -194,7 +206,8 @@ fn main() -> Result<()> {
         MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
     }
     match args.get(1).map(String::as_str) {
-        Some("encode") => encode(&args[2])?,
+        Some("encode") => encode(&args[2], false)?,
+        Some("encode-demo") => encode(&args[2], true)?,
         Some("decode") => {
             // Repeated runs in one process separate a one-time cost from a leak.
             let repeat = if args.iter().any(|a| a == "--twice") { 2 } else { 1 };
