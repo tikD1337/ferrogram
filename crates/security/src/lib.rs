@@ -101,7 +101,8 @@ impl From<io::Error> for Error {
     }
 }
 
-/// Select `%LOCALAPPDATA%\tg-rust` or the absolute `TG_DATA_DIR` override.
+/// Select `%LOCALAPPDATA%\tg-rust` or the absolute `TG_DATA_DIR` override. The directory keeps
+/// the name from before the rename to Ferrogram so existing sessions and keys stay valid.
 /// Does not read or migrate any prototype data. Relative and probe paths are rejected.
 pub fn data_dir() -> Result<PathBuf, Error> {
     select_data_dir(

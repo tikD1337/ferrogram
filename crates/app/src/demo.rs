@@ -321,7 +321,7 @@ fn demo_photo(id: i32) -> tg_core::Photo {
 }
 /// Called by the startup worker. One fixed synthetic JPEG per process, no account data.
 pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
-    let path = std::env::temp_dir().join(format!("tg-rust-demo-{}.jpg", std::process::id()));
+    let path = std::env::temp_dir().join(format!("ferrogram-demo-{}.jpg", std::process::id()));
     std::fs::write(&path, include_bytes!("../assets/demo-photo.jpg"))?;
     Ok(path)
 }

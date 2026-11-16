@@ -128,9 +128,9 @@ impl State {
                 .fold(0u32, |n, c| n.saturating_add(c.unread_count))
         });
         window.set_window_title(if total == 0 {
-            "tg-rust".into()
+            "Ferrogram".into()
         } else {
-            format!("tg-rust ({total})").into()
+            format!("Ferrogram ({total})").into()
         });
         let unread = rows
             .iter()

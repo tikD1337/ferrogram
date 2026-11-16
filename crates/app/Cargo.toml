@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "ferrogram"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 

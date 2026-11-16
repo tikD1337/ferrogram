@@ -60,7 +60,8 @@ fn wipe(bytes: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-// Application constant, deliberately different from tg-rust-tpm-probe. Never
+// Storage identifier from before the rename to Ferrogram: changing it would orphan existing
+// database keys. Application constant, deliberately different from tg-rust-tpm-probe. Never
 // delete or overwrite this key: it may protect several application data directories.
 const TPM_KEY_NAME: PCWSTR = w!("tg-rust-database-wrap-v1");
 // Domain separation, not a secret. Current-user DPAPI plus this entropy is mandatory.

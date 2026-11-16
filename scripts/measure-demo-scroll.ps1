@@ -4,7 +4,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Binary = 'target/release/tg-app.exe',
+    [string]$Binary = 'target/release/ferrogram.exe',
     [ValidateRange(1, 3600)][int]$DurationSec = 120,
     [string]$Csv = 'target/stage3-m1-scroll-memory.csv'
 )

@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/images/icon.png" width="128" alt="tg-rust icon">
+<img src="docs/images/icon.png" width="128" alt="Ferrogram icon">
 
-# tg-rust
+# Ferrogram
 
 **A native Telegram client for Windows that stays light.**<br>
 Written in Rust. About 8× less memory than Telegram Desktop, measured.
@@ -19,7 +19,7 @@ Written in Rust. About 8× less memory than Telegram Desktop, measured.
 </div>
 
 > [!IMPORTANT]
-> **tg-rust is an unofficial client in early development.** It is not affiliated with or endorsed
+> **Ferrogram is an unofficial client in early development.** It is not affiliated with or endorsed
 > by Telegram. It uses the official [TDLib](https://github.com/tdlib/td) library and your own API
 > credentials. Expect missing features and rough edges.
 
@@ -55,13 +55,13 @@ Ten minutes idle on the same account, all three clients running at the same time
 Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 <p align="center">
-  <img src="docs/images/chart-memory.svg" alt="Memory: tg-rust 57.5 MB, Telegram Desktop 465.0 MB, AyuGram 541.6 MB" width="720"><br><br>
-  <img src="docs/images/chart-cpu.svg" alt="CPU: tg-rust 0.25 %, Telegram Desktop 0.37 %, AyuGram 0.55 %" width="720">
+  <img src="docs/images/chart-memory.svg" alt="Memory: Ferrogram 57.5 MB, Telegram Desktop 465.0 MB, AyuGram 541.6 MB" width="720"><br><br>
+  <img src="docs/images/chart-cpu.svg" alt="CPU: Ferrogram 0.25 %, Telegram Desktop 0.37 %, AyuGram 0.55 %" width="720">
 </p>
 
 | Client | Private Bytes | CPU, % of one core | Threads |
 |---|---:|---:|---:|
-| **tg-rust** | **57.5 MB** | **0.25** | **11** |
+| **Ferrogram** | **57.5 MB** | **0.25** | **11** |
 | Telegram Desktop | 465.0 MB | 0.37 | 80 |
 | AyuGram | 541.6 MB | 0.55 | 88 |
 
@@ -111,6 +111,8 @@ cargo run --release -p tg-app -- --demo
 ```powershell
 cargo run --release -p tg-app
 ```
+
+The program is built as `target/release/ferrogram.exe`.
 
 ## ⚙️ How it works
 
