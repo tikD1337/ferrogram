@@ -75,3 +75,16 @@ mod tests {
         assert_eq!(g.anchor(40.0), Some((MessageId(2097152), 0.0)));
     }
 }
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    #[test]
+    fn deleting_rows_above_viewport_preserves_message_and_offset() {
+        let mut g = Geometry::default();
+        g.sync((1..=5).map(|n| MessageId(n * 1048576)));
+        let anchor = g.anchor(190.0);
+        g.sync((3..=5).map(|n| MessageId(n * 1048576)));
+        assert_eq!(g.anchor(g.restore(anchor)), anchor);
+    }
+}

@@ -179,6 +179,7 @@ pub(crate) fn groups(messages: &[Message]) -> Vec<Range<usize>> {
 /// Everything around a row that changes how it looks; a cached row is reused only if equal.
 #[derive(Clone, PartialEq, Debug)]
 struct Context {
+    complete: bool,
     members: Vec<MessageId>,
     date: bool,
     continued: bool,
@@ -207,6 +208,8 @@ pub(crate) struct Feed {
     pub read_outbox: Cell<MessageId>,
     pub unread_after: Cell<Option<MessageId>>,
     pub jump_unread: Cell<bool>,
+    pub jump_target: Cell<Option<MessageId>>,
+    pub highlight: Cell<Option<MessageId>>,
     // Only viewport rows own raster images, at most 64 rows and 96 MiB in total.
     visible: RefCell<Vec<Cached>>,
     pub media: RefCell<Option<Rc<RefCell<Media>>>>,
@@ -224,6 +227,8 @@ impl Feed {
             read_outbox: Cell::new(MessageId(0)),
             unread_after: Cell::new(None),
             jump_unread: Cell::new(false),
+            jump_target: Cell::new(None),
+            highlight: Cell::new(None),
             notify: ModelNotify::default(),
         })
     }
@@ -255,6 +260,7 @@ impl Feed {
             .and_then(|id| messages.iter().position(|m| !m.outgoing && m.id > id))
             .is_some_and(|index| groups[i].contains(&index));
         Context {
+            complete: self.complete_album(messages, &groups[i]),
             unread,
             members: group.iter().map(|m| m.id).collect(),
             date,
@@ -299,6 +305,17 @@ impl Feed {
         } else {
             None
         };
+        // Other queued updates may refresh an empty history while the around page is in flight.
+        let target = self
+            .jump_target
+            .get()
+            .filter(|id| history.messages.iter().any(|m| m.id == *id));
+        let jump = target
+            .map(|id| {
+                self.jump_target.set(None);
+                resolve(id)
+            })
+            .or(jump);
         let mut top = if let Some(key) = jump {
             self.jump_unread.set(false);
             geometry.restore(Some((key, 0.0)))
@@ -441,7 +458,11 @@ impl Feed {
             }
             SendState::Sent => 0,
         };
-        let time_width = 32.0 + if last.outgoing { 18.0 } else { 0.0 };
+        let label_width = if last.edited { 72.0 } else { 32.0 };
+        let time_width = label_width + if last.outgoing { 18.0 } else { 0.0 };
+        let forward_height = if first.forwarded.is_some() { 22.0 } else { 0.0 };
+        let quote_height = if first.reply.is_some() { 44.0 } else { 0.0 };
+        let header_height = forward_height + quote_height;
         let available = if media { media_width } else { max_width } - 2.0 * PAD;
         let text = caption.map(|message| {
             self.engine
@@ -457,15 +478,15 @@ impl Feed {
                     t.clipped,
                 )
             });
-        let media_y = if media && sender.is_some() {
-            PAD_TOP + SENDER
+        let media_y = if media && (sender.is_some() || header_height > 0.0) {
+            PAD_TOP + sender_height + header_height
         } else {
             0.0
         };
         let text_y = if media {
             media_y + media_height + 6.0
         } else {
-            PAD_TOP + sender_height
+            PAD_TOP + sender_height + header_height
         };
         // As in Telegram: the time sits on the last text line when it fits, else on its own.
         let inline = last_line + 8.0 + time_width;
@@ -486,6 +507,9 @@ impl Feed {
         if let Some(name) = sender {
             let estimate = name.chars().count() as f32 * 8.0 + 2.0 * PAD;
             bubble_width = bubble_width.max(estimate.min(max_width));
+        }
+        if header_height > 0.0 {
+            bubble_width = bubble_width.max(220.0_f32.min(max_width));
         }
         let bubble_height = if text.is_some() {
             text_y + text_height + if footer { FOOTER } else { 0.0 } + PAD_BOTTOM
@@ -534,10 +558,50 @@ impl Feed {
             ))
         });
         let mut time = clock::time(last.date);
+        if last.edited {
+            time.insert_str(0, "edited ");
+        }
         if clipped {
             time.insert_str(0, "clipped  ");
         }
+        let permissions = first.permissions.unwrap_or_default();
         let row = MessageRow {
+            key: last.id.0.to_string().into(),
+            can_edit: group.len() == 1 && first.outgoing && first.is_text && permissions.edit,
+            can_reply: context.complete && permissions.reply,
+            can_delete: context.complete
+                && (group
+                    .iter()
+                    .all(|m| m.permissions.is_some_and(|p| p.delete_self))
+                    || group
+                        .iter()
+                        .all(|m| m.permissions.is_some_and(|p| p.delete_all))),
+            can_forward: context.complete
+                && group
+                    .iter()
+                    .all(|m| m.permissions.is_some_and(|p| p.forward)),
+            highlighted: group.iter().any(|m| self.highlight.get() == Some(m.id)),
+            forwarded: first
+                .forwarded
+                .as_ref()
+                .map(|n| format!("Forwarded from {n}"))
+                .unwrap_or_default()
+                .into(),
+            sender_y: PAD_TOP + forward_height,
+            quote_y: PAD_TOP + forward_height + sender_height,
+            quote_sender: first
+                .reply
+                .as_ref()
+                .map_or("", |r| r.sender.as_str())
+                .into(),
+            quote_preview: first
+                .reply
+                .as_ref()
+                .map_or("", |r| r.preview.as_str())
+                .into(),
+            quote_color: peer_color(first.reply.as_ref().map_or(0, |r| r.sender_id)),
+            has_quote: first.reply.is_some(),
+            time_label_width: label_width,
             row_y: 0.0,
             unread: context.unread,
             unread_y: if context.date { DATE } else { 0.0 },
@@ -570,6 +634,34 @@ impl Feed {
             checks,
         };
         (row, cells)
+    }
+    fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
+        if messages[range.start].album == 0 || range.len() == MAX_ALBUM {
+            return true;
+        }
+        let h = self.history.borrow();
+        let older_known = range.start > 0
+            || (h.older.is_none() && h.pending_older.is_none() && h.pending_around.is_none());
+        let newer_known = range.end < messages.len()
+            || (h.newer.is_none() && h.pending_around.is_none() && !h.latest_requested);
+        older_known && newer_known
+    }
+    /// Edge albums wait for the existing prefetch to establish both neighboring boundaries.
+    pub fn action_members(&self, key: MessageId) -> Vec<MessageId> {
+        let h = self.history.borrow();
+        groups(&h.messages)
+            .into_iter()
+            .find(|r| h.messages[r.end - 1].id == key && self.complete_album(&h.messages, r))
+            .map(|r| h.messages[r].iter().map(|m| m.id).collect())
+            .unwrap_or_default()
+    }
+    pub fn visible_ids(&self) -> Vec<MessageId> {
+        self.visible
+            .borrow()
+            .iter()
+            .flat_map(|r| r.context.members.iter().copied())
+            .take(300)
+            .collect()
     }
     /// Uses exact bubble/cell bounds, never the prefetch demand set or date/unread separators.
     pub fn visible_incoming(&self, top: f32, height: f32) -> Vec<MessageId> {
@@ -732,6 +824,11 @@ mod feed_tests {
     use tg_core::{Message, MessageId};
     fn message(n: i64) -> Message {
         Message {
+            reply: None,
+            forwarded: None,
+            edited: false,
+            is_text: true,
+            permissions: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
                 file: tg_core::MediaFile {
                     id: n as i32,
@@ -760,7 +857,9 @@ mod feed_tests {
     #[test]
     fn first_unread_album_keeps_separator_and_receipts_exclude_overscan_and_outgoing() {
         let feed = Feed::new(None);
-        feed.history.borrow_mut().open_around(ChatId(1));
+        feed.history
+            .borrow_mut()
+            .open_around(ChatId(1), MessageId(19980 * 1048576));
         feed.history.borrow_mut().around(
             ChatId(1),
             (19955..=20004).map(message).collect(),
@@ -781,7 +880,9 @@ mod feed_tests {
         for m in &mut album {
             m.outgoing = false;
         }
-        feed.history.borrow_mut().open_around(ChatId(1));
+        feed.history
+            .borrow_mut()
+            .open_around(ChatId(1), MessageId(11 * 1048576));
         feed.history
             .borrow_mut()
             .around(ChatId(1), album, MessageId(11 * 1048576));
@@ -951,5 +1052,136 @@ mod feed_tests {
         // 9 older single messages arrived; the album gained 3 items but is still one row.
         assert_eq!(feed.geometry.borrow().rows.len(), rows + 9);
         assert_eq!(feed.geometry.borrow().anchor(new_top), Some(anchor));
+    }
+}
+
+pub(crate) struct Destinations {
+    pub chats: Rc<Chats>,
+    pub query: RefCell<String>,
+    pub notify: ModelNotify,
+}
+impl Destinations {
+    pub fn index(&self, row: usize) -> Option<usize> {
+        let query = self.query.borrow().to_lowercase();
+        self.chats
+            .rows
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.title.to_lowercase().contains(&query))
+            .nth(row)
+            .map(|(i, _)| i)
+    }
+}
+impl Model for Destinations {
+    type Data = ChatRow;
+    fn row_count(&self) -> usize {
+        let q = self.query.borrow().to_lowercase();
+        self.chats
+            .rows
+            .borrow()
+            .iter()
+            .filter(|c| c.title.to_lowercase().contains(&q))
+            .count()
+    }
+    fn row_data(&self, row: usize) -> Option<ChatRow> {
+        self.chats.row_data(self.index(row)?)
+    }
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+    fn message(n: i64) -> Message {
+        Message {
+            reply: None,
+            forwarded: None,
+            edited: false,
+            is_text: false,
+            permissions: None,
+            id: MessageId(n * 1048576),
+            chat: ChatId(7),
+            date: 10,
+            outgoing: true,
+            text: String::new(),
+            entities: vec![],
+            send_state: SendState::Sent,
+            album: 91,
+            sender_id: 0,
+            sender: None,
+            photo: None,
+        }
+    }
+    #[test]
+    fn quoted_message_jump_survives_refresh_while_around_page_is_pending() {
+        let feed = Feed::new(None);
+        let id = MessageId(19995 * 1048576);
+        feed.jump_target.set(Some(id));
+        feed.layout(0.0, 200.0, false);
+        assert_eq!(feed.jump_target.get(), Some(id));
+    }
+    #[test]
+    fn deleting_older_bubbles_keeps_visible_message_and_pixel_offset() {
+        let feed = Feed::new(None);
+        {
+            let mut h = feed.history.borrow_mut();
+            h.chat = Some(ChatId(7));
+            h.messages = (19901..=20000)
+                .map(|n| {
+                    let mut m = message(n);
+                    m.album = 0;
+                    m.is_text = true;
+                    m.text = format!("Message {n}");
+                    m
+                })
+                .collect();
+        }
+        feed.layout(0.0, 200.0, false);
+        let requested = feed
+            .geometry
+            .borrow()
+            .restore(Some((MessageId(19950 * 1048576), 13.0)));
+        let (top, _) = feed.layout(requested, 200.0, false);
+        let anchor = feed.geometry.borrow().anchor(top);
+        feed.history.borrow_mut().remove(
+            ChatId(7),
+            &(19901..19920)
+                .map(|n| MessageId(n * 1048576))
+                .collect::<Vec<_>>(),
+        );
+        let (top, _) = feed.layout(top, 200.0, false);
+        assert_eq!(feed.geometry.borrow().anchor(top), anchor);
+        assert_eq!(feed.history.borrow().messages.len(), 81);
+    }
+    #[test]
+    fn partial_album_at_a_paging_edge_cannot_be_forwarded_or_deleted() {
+        let feed = Feed::new(None);
+        {
+            let mut h = feed.history.borrow_mut();
+            h.chat = Some(ChatId(7));
+            h.older = Some(MessageId(19990 * 1048576));
+            h.messages = (19990..19994).map(message).collect();
+        }
+        assert!(feed.action_members(MessageId(19993 * 1048576)).is_empty());
+        let mut neighbor = message(19989);
+        neighbor.album = 0;
+        feed.history.borrow_mut().messages.insert(0, neighbor);
+        assert_eq!(feed.action_members(MessageId(19993 * 1048576)).len(), 4);
+    }
+    #[test]
+    fn action_targets_cover_every_album_member_and_use_first_for_reply() {
+        let feed = Feed::new(None);
+        feed.history.borrow_mut().messages = (19990..19994).map(message).collect();
+        let ids = feed.action_members(MessageId(19993 * 1048576));
+        assert_eq!(
+            ids,
+            (19990..19994)
+                .map(|n| MessageId(n * 1048576))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(ids.first(), Some(&MessageId(19990 * 1048576)));
     }
 }

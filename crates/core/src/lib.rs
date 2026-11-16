@@ -14,7 +14,7 @@ mod secret;
 pub use command::{Command, CommandKind};
 pub use event::{
     AuthState, Chat, ChatListChange, CommandError, EntityKind, Event, MediaFile, Message,
-    MessagePreview, Photo, SecurityWarning, SendState, TextEntity,
+    MessagePermissions, MessagePreview, Photo, Reply, SecurityWarning, SendState, TextEntity,
 };
 pub use ids::{ChatId, MessageId, UserId};
 pub use secret::Secret;

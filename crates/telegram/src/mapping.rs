@@ -79,6 +79,11 @@ pub(crate) fn command_kind(value: &Value) -> CommandKind {
         Some("history" | "history_around") => CommandKind::LoadOlderMessages,
         Some("history_newer") => CommandKind::LoadNewerMessages,
         Some("send_text") => CommandKind::SendText,
+        Some("edit_text") => CommandKind::EditText,
+        Some("delete") => CommandKind::DeleteMessages,
+        Some("forward") => CommandKind::ForwardMessages,
+        Some("replied") => CommandKind::GetRepliedMessage,
+        Some("properties") => CommandKind::GetMessageProperties,
         Some("logout") => CommandKind::LogOut,
         Some("shutdown") => CommandKind::ShutDown,
         _ => CommandKind::Initialize,
@@ -246,7 +251,32 @@ pub(crate) fn message(
     } else {
         integer(&value["media_album_id"])?
     };
+    let reply = &value["reply_to"];
+    let reply = if reply["@type"] == "messageReplyToMessage" {
+        let (sender_id, sender) = origin(&reply["origin"], users, chats);
+        let preview = reply["quote"]["text"]["text"]
+            .as_str()
+            .or_else(|| reply["content"]["text"]["text"].as_str())
+            .or_else(|| reply["content"]["caption"]["text"].as_str())
+            .unwrap_or_else(|| content_label(&reply["content"]));
+        Some(tg_core::Reply {
+            resolved: false,
+            chat: ChatId(integer(&reply["chat_id"])?),
+            message: MessageId(integer(&reply["message_id"])?),
+            sender_id,
+            sender,
+            preview: truncate(preview.replace(['\r', '\n'], " "), 256),
+        })
+    } else {
+        None
+    };
     Ok(Some(Message {
+        reply,
+        forwarded: (!value["forward_info"].is_null())
+            .then(|| origin(&value["forward_info"]["origin"], users, chats).1),
+        edited: integer(&value["edit_date"]).unwrap_or(0) > 0,
+        is_text: content["@type"] == "messageText",
+        permissions: None,
         photo,
         id: MessageId(integer(&value["id"])?),
         chat,
@@ -261,6 +291,30 @@ pub(crate) fn message(
     }))
 }
 
+fn origin(value: &Value, users: &Users, chats: &Chats) -> (i64, String) {
+    let (id, name) = match value["@type"].as_str() {
+        Some("messageOriginUser") => {
+            let id = integer(&value["sender_user_id"]).unwrap_or(0);
+            (id, users.name(id).unwrap_or("Unknown sender"))
+        }
+        Some("messageOriginChat" | "messageOriginChannel") => {
+            let id = integer(
+                &value[if value["@type"] == "messageOriginChat" {
+                    "sender_chat_id"
+                } else {
+                    "chat_id"
+                }],
+            )
+            .unwrap_or(0);
+            (id, chats.title(ChatId(id)).unwrap_or("Unknown chat"))
+        }
+        Some("messageOriginHiddenUser") => {
+            (0, value["sender_name"].as_str().unwrap_or("Hidden sender"))
+        }
+        _ => (0, "Message"),
+    };
+    (id, truncate(name.replace(['\r', '\n'], " "), 256))
+}
 /// Reusable decoder with a bounded main-chat-list model and no message cache.
 #[derive(Debug, Default)]
 pub struct Decoder {
@@ -334,6 +388,84 @@ impl Decoder {
                     messages,
                 });
             }
+            Some("message" | "error") if extra["command"] == "replied" => {
+                let reply = if value["@type"] == "message" {
+                    message(value, &self.users, &self.chats)?.map(|m| tg_core::Reply {
+                        resolved: true,
+                        chat: m.chat,
+                        message: m.id,
+                        sender_id: m.sender_id,
+                        sender: truncate(
+                            if m.outgoing {
+                                "You".into()
+                            } else {
+                                m.sender.unwrap_or_else(|| {
+                                    self.users
+                                        .name(m.sender_id)
+                                        .or_else(|| self.chats.title(m.chat))
+                                        .unwrap_or("Message")
+                                        .into()
+                                })
+                            },
+                            256,
+                        ),
+                        preview: truncate(m.text.replace(['\r', '\n'], " "), 256),
+                    })
+                } else {
+                    None
+                };
+                emit(Event::ReplyResolved {
+                    chat: ChatId(integer(&extra["chat"])?),
+                    message: MessageId(integer(&extra["message"])?),
+                    reply,
+                });
+            }
+            Some("messageProperties" | "error") if extra["command"] == "properties" => {
+                emit(Event::MessageProperties {
+                    chat: ChatId(integer(&extra["chat"])?),
+                    message: MessageId(integer(&extra["message"])?),
+                    permissions: tg_core::MessagePermissions {
+                        edit: value["can_be_edited"] == true,
+                        delete_self: value["can_be_deleted_only_for_self"] == true,
+                        delete_all: value["can_be_deleted_for_all_users"] == true,
+                        forward: value["can_be_forwarded"] == true,
+                        reply: value["can_be_replied"] == true,
+                    },
+                });
+            }
+            Some("updateMessageContent") => {
+                // Reuse the bounded content/entity decoder, without retaining a second history.
+                let mapped = json!({"id":value["message_id"],"chat_id":value["chat_id"],
+                    "date":0,"is_outgoing":false,"content":value["new_content"]});
+                if let Some(m) = message(&mapped, &self.users, &self.chats)? {
+                    emit(Event::MessageContentChanged {
+                        chat: m.chat,
+                        message: m.id,
+                        text: m.text,
+                        entities: m.entities,
+                        photo: m.photo,
+                        is_text: m.is_text,
+                    });
+                }
+            }
+            Some("updateMessageEdited") => emit(Event::MessageEdited {
+                chat: ChatId(integer(&value["chat_id"])?),
+                message: MessageId(integer(&value["message_id"])?),
+                edited: integer(&value["edit_date"])? > 0,
+            }),
+            Some("updateDeleteMessages") if value["is_permanent"] == true => {
+                let ids = value["message_ids"].as_array().ok_or_else(malformed)?;
+                // Emit bounded chunks; the UI bridge enforces the total queued byte budget.
+                for chunk in ids.chunks(300) {
+                    emit(Event::MessagesDeleted {
+                        chat: ChatId(integer(&value["chat_id"])?),
+                        messages: chunk
+                            .iter()
+                            .map(|id| integer(id).map(MessageId))
+                            .collect::<Result<_, _>>()?,
+                    });
+                }
+            }
             Some("updateUser") => self.users.apply(&value["user"])?,
             Some("updateFile") => emit(Event::FileUpdated(media_file(&value["file"])?)),
             Some("file") if extra["command"] == "download" => {
@@ -357,7 +489,9 @@ impl Decoder {
                     });
                 }
             }
-            Some("message") if extra["command"] == "send_text" => {
+            Some("message")
+                if extra["command"] == "send_text" || extra["command"] == "edit_text" =>
+            {
                 if let Some(message) = message(value, &self.users, &self.chats)? {
                     emit(Event::NewMessage(message));
                 }

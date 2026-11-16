@@ -109,6 +109,10 @@ fn message_bytes(m: &tg_core::Message) -> usize {
             tg_core::SendState::Failed(error) => error.message.capacity(),
             _ => 0,
         }
+        + m.reply
+            .as_ref()
+            .map_or(0, |r| r.sender.capacity() + r.preview.capacity() + 128)
+        + m.forwarded.as_ref().map_or(0, String::capacity)
         + m.text.capacity()
         + m.entities.capacity() * std::mem::size_of::<tg_core::TextEntity>()
         + m.entities
@@ -139,6 +143,29 @@ fn event_bytes(e: &Event) -> usize {
         Event::AuthStateChanged(tg_core::AuthState::WaitPassword { hint }) => hint.capacity(),
         Event::FileUpdated(file) => file.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2),
         Event::CommandFailed { error, .. } => error.message.capacity(),
+        Event::ReplyResolved { reply, .. } => reply
+            .as_ref()
+            .map_or(0, |r| r.sender.capacity() + r.preview.capacity() + 128),
+        Event::MessagesDeleted { messages, .. } => {
+            messages.capacity() * std::mem::size_of::<tg_core::MessageId>()
+        }
+        Event::MessageContentChanged {
+            text,
+            entities,
+            photo,
+            ..
+        } => {
+            text.capacity()
+                + entities.capacity() * std::mem::size_of::<tg_core::TextEntity>()
+                + entities
+                    .iter()
+                    .map(|e| match &e.kind {
+                        tg_core::EntityKind::TextUrl { target } => target.capacity(),
+                        _ => 0,
+                    })
+                    .sum::<usize>()
+                + photo.as_ref().map_or(0, photo_bytes)
+        }
         _ => 0,
     }
 }

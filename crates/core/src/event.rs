@@ -73,9 +73,34 @@ pub enum SendState {
     Failed(CommandError),
 }
 
+/// Compact reply metadata. Strings are each bounded to 256 UTF-8 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub resolved: bool,
+    pub chat: ChatId,
+    pub message: MessageId,
+    pub sender_id: i64,
+    pub sender: String,
+    pub preview: String,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessagePermissions {
+    pub edit: bool,
+    pub delete_self: bool,
+    pub delete_all: bool,
+    pub forward: bool,
+    pub reply: bool,
+}
 /// Engine output is bounded to 64 KiB text and 1,024 entities per message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
+    pub reply: Option<Reply>,
+    /// Forward origin display name, at most 256 UTF-8 bytes.
+    pub forwarded: Option<String>,
+    pub edited: bool,
+    pub is_text: bool,
+    /// Populated on demand, never inferred from ownership alone.
+    pub permissions: Option<MessagePermissions>,
     pub photo: Option<Photo>,
     pub id: MessageId,
     pub chat: ChatId,
@@ -184,6 +209,33 @@ pub enum Event {
         messages: Vec<Message>,
     },
     NewMessage(Message),
+    ReplyResolved {
+        chat: ChatId,
+        message: MessageId,
+        reply: Option<Reply>,
+    },
+    MessageProperties {
+        chat: ChatId,
+        message: MessageId,
+        permissions: MessagePermissions,
+    },
+    MessageContentChanged {
+        chat: ChatId,
+        message: MessageId,
+        text: String,
+        entities: Vec<TextEntity>,
+        photo: Option<Photo>,
+        is_text: bool,
+    },
+    MessageEdited {
+        chat: ChatId,
+        message: MessageId,
+        edited: bool,
+    },
+    MessagesDeleted {
+        chat: ChatId,
+        messages: Vec<MessageId>,
+    },
     MessageUpdated {
         old_id: MessageId,
         message: Message,

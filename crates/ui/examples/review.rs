@@ -55,6 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 before: tg_core::MessageId(0),
                 next_before: None,
                 messages: vec![tg_core::Message {
+                    reply: None,
+                    forwarded: None,
+                    edited: false,
+                    is_text: true,
+                    permissions: None,
                     id: tg_core::MessageId(104857600),
                     chat: tg_core::ChatId(7),
                     date: 43200,

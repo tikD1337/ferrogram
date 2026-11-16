@@ -1,4 +1,5 @@
-//! The sole Slint boundary. tg-app sees domain commands/events and plain options only.
+// The sole Slint boundary. tg-app sees domain commands/events and plain options only.
+mod actions;
 mod bridge;
 mod clock;
 mod history;
@@ -44,6 +45,7 @@ pub struct Options {
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
 struct State {
+    actions: actions::Actions,
     media: Rc<RefCell<media::Media>>,
     chats: Rc<Chats>,
     feed: Rc<Feed>,
@@ -77,6 +79,16 @@ impl State {
         if self.refreshing.replace(true) {
             return;
         }
+        if self.feed.jump_target.get().is_some_and(|id| {
+            self.feed
+                .history
+                .borrow()
+                .messages
+                .iter()
+                .any(|m| m.id == id)
+        }) {
+            self.start_highlight(window);
+        }
         let height = window.get_feed_height().max(1.0);
         let (top, total) = self.feed.layout(
             (-window.get_feed_y()).max(0.0),
@@ -90,6 +102,7 @@ impl State {
         self.prefetch(window, top, height, total);
         self.sync_media(window);
         self.view_visible(window);
+        self.query_properties(window);
     }
     fn view_visible(&self, window: &AppWindow) {
         if !window.get_ready()
@@ -167,6 +180,19 @@ impl State {
                     media::Key::new(photo, CHAT_AVATAR, CHAT_AVATAR, self.feed.scale.get()),
                     photo.clone(),
                 ));
+            }
+        }
+        if window.get_action_dialog() == 2 {
+            let first = ((-window.get_destination_y()).max(0.0) / 52.0).floor() as usize;
+            for index in first.saturating_sub(1)..first.saturating_add(9) {
+                if let Some(i) = self.actions.destinations.index(index)
+                    && let Some(photo) = rows.get(i).and_then(|c| c.avatar.as_ref())
+                {
+                    wanted.push((
+                        media::Key::new(photo, CHAT_AVATAR, CHAT_AVATAR, self.feed.scale.get()),
+                        photo.clone(),
+                    ));
+                }
             }
         }
         let selected = rows
@@ -273,11 +299,17 @@ impl State {
         if !self.send(window, command) {
             return;
         }
+        self.cancel_action(window);
+        self.feed.jump_target.set(None);
+        self.feed.highlight.set(None);
         self.seek_start.set(unread && chat.last_read_inbox.0 == 0);
         self.chats.selected.set(Some(chat.id));
         self.chats.notify.reset();
         if unread {
-            self.feed.history.borrow_mut().open_around(chat.id);
+            self.feed
+                .history
+                .borrow_mut()
+                .open_around(chat.id, chat.last_read_inbox);
         } else {
             self.feed.history.borrow_mut().open(chat.id);
         }
@@ -297,6 +329,11 @@ impl State {
     }
     fn event(&self, window: &AppWindow, event: Event) {
         match event {
+            event @ (Event::MessageProperties { .. }
+            | Event::MessageContentChanged { .. }
+            | Event::MessageEdited { .. }
+            | Event::MessagesDeleted { .. }
+            | Event::ReplyResolved { .. }) => self.action_event(window, event),
             Event::NotificationActivated(chat) => {
                 let index = self.chats.rows.borrow().iter().position(|c| c.id == chat);
                 if let Some(index) = index {
@@ -333,6 +370,19 @@ impl State {
                     .borrow_mut()
                     .around(chat, messages, anchor)
                 {
+                    if let Some(target) = self.feed.jump_target.get()
+                        && !self
+                            .feed
+                            .history
+                            .borrow()
+                            .messages
+                            .iter()
+                            .any(|m| m.id == target)
+                    {
+                        self.feed.jump_target.set(None);
+                        self.feed.highlight.set(None);
+                        window.set_error("The original message is unavailable.".into());
+                    }
                     self.feed.invalidate();
                     self.refresh(window);
                 }
@@ -399,6 +449,7 @@ impl State {
                         }
                     }
                     AuthState::LoggingOut | AuthState::Closed => {
+                        self.cancel_action(window);
                         *self.reads.borrow_mut() = ReadBatches::default();
                         self.total_unread.set(None);
                         self.chats.rows.borrow_mut().clear();
@@ -430,6 +481,7 @@ impl State {
             }
             Event::ChatListChanged(change) => {
                 self.chats.apply(change);
+                self.actions.destinations.notify.reset();
                 self.unread_title(window);
                 if window.get_demo() && self.chats.selected.get().is_none() {
                     self.open(window, 0);
@@ -500,6 +552,7 @@ impl State {
                 }
             }
             Event::NewMessage(message) => {
+                self.finish_edit(window, message.chat, message.id);
                 self.feed.invalidate_message(message.id);
                 self.feed
                     .history
@@ -518,6 +571,9 @@ impl State {
                 self.refresh(window);
             }
             Event::CommandFailed { command, error } => {
+                if command == CommandKind::EditText {
+                    self.edit_failed(window);
+                }
                 if command == CommandKind::LoadMoreChats {
                     self.loading_chats.set(false);
                 }
@@ -600,6 +656,7 @@ impl Ui {
         *chats.media.borrow_mut() = Some(media.clone());
         *feed.media.borrow_mut() = Some(media.clone());
         let state = Rc::new(State {
+            actions: actions::Actions::new(chats.clone()),
             media,
             chats,
             feed,
@@ -612,12 +669,14 @@ impl Ui {
             total_unread: Cell::new(None),
             seek_start: Cell::new(false),
         });
+        actions::bind(&window, &state);
         let weak = window.as_weak();
         let s = state.clone();
         window.on_media_ready(move || {
             if let Some(w) = weak.upgrade() {
                 s.media.borrow_mut().drain();
                 s.chats.notify.reset();
+                s.actions.destinations.notify.reset();
                 s.feed.notify.reset();
                 s.sync_media(&w);
             }
@@ -742,18 +801,7 @@ impl Ui {
         let s = state.clone();
         window.on_send(move || {
             if let Some(w) = weak.upgrade() {
-                let chat = s.feed.history.borrow().chat;
-                let text = w.get_draft().to_string();
-                if text.len() > 64 * 1024 {
-                    w.set_error("Message exceeds the 64 KiB text limit.".into());
-                    return;
-                }
-                if let Some(chat) = chat
-                    && !text.trim().is_empty()
-                    && s.send(&w, Command::SendText { chat, text })
-                {
-                    w.set_draft("".into());
-                }
+                s.send_composer(&w);
             }
         });
         let weak = window.as_weak();

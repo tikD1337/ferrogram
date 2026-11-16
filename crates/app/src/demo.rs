@@ -17,6 +17,7 @@ pub(crate) struct Demo {
     media_path: std::path::PathBuf,
     text_only: bool,
     sent: i64,
+    changes: Arc<std::sync::Mutex<Changes>>,
     // Four synthetic metadata rows; no retained full message history.
     chats: Arc<std::sync::Mutex<Vec<Chat>>>,
     // At most two delayed page workers, one per direction; no retained full history.
@@ -29,6 +30,7 @@ impl Demo {
             media_path,
             text_only,
             sent: 20000,
+            changes: Arc::default(),
             chats: Arc::default(),
             pending: Arc::default(),
         }
@@ -87,6 +89,118 @@ impl Demo {
             return Ok(());
         };
         match command {
+            Command::GetMessageProperties { chat, message } => {
+                let m = self.lookup(chat, message);
+                sink.post(Event::MessageProperties {
+                    chat,
+                    message,
+                    permissions: m.map_or_else(Default::default, |m| tg_core::MessagePermissions {
+                        edit: m.outgoing && m.is_text,
+                        delete_self: true,
+                        delete_all: true,
+                        forward: true,
+                        reply: true,
+                    }),
+                });
+            }
+            Command::GetRepliedMessage { chat, message } => {
+                let reply = self.lookup(chat, message).and_then(|m| m.reply);
+                sink.post(Event::ReplyResolved {
+                    chat,
+                    message,
+                    reply,
+                });
+            }
+            Command::ReplyText { chat, reply, text } => {
+                let original = self.lookup(chat, reply);
+                self.sent += 1;
+                let mut m = local_message(chat, self.sent, text);
+                m.reply = original.map(|m| quote(&m));
+                self.remember(m.clone())?;
+                sink.post(Event::NewMessage(m));
+            }
+            Command::EditText {
+                chat,
+                message,
+                text,
+            } => {
+                let Some(mut m) = self
+                    .lookup(chat, message)
+                    .filter(|m| m.outgoing && m.is_text)
+                else {
+                    return Err(action_error());
+                };
+                m.text = text;
+                m.entities.clear();
+                m.edited = true;
+                self.remember(m.clone())?;
+                sink.post(Event::MessageContentChanged {
+                    chat,
+                    message,
+                    text: m.text,
+                    entities: vec![],
+                    photo: None,
+                    is_text: true,
+                });
+                sink.post(Event::MessageEdited {
+                    chat,
+                    message,
+                    edited: true,
+                });
+            }
+            Command::DeleteMessages { chat, messages, .. } => {
+                if messages.is_empty() || messages.len() > 10 {
+                    return Err(action_error());
+                }
+                let mut changes = self.changes.lock().map_err(|_| action_error())?;
+                if changes.entries.len() + messages.len() > 512 {
+                    return Err(action_error());
+                }
+                for id in &messages {
+                    changes.entries.insert((chat, *id), None);
+                }
+                sink.post(Event::MessagesDeleted { chat, messages });
+            }
+            Command::ForwardMessages { from, to, messages } => {
+                if messages.is_empty() || messages.len() > 10 {
+                    return Err(action_error());
+                }
+                let originals = messages
+                    .iter()
+                    .map(|id| self.lookup(from, *id).ok_or_else(action_error))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut forwarded = Vec::new();
+                self.sent += 1;
+                let album = self.sent;
+                for mut m in originals {
+                    self.sent += 1;
+                    m.chat = to;
+                    m.id = MessageId(self.sent * 1048576);
+                    m.forwarded = Some(m.sender.clone().unwrap_or_else(|| {
+                        if m.outgoing {
+                            "You".into()
+                        } else {
+                            "Message".into()
+                        }
+                    }));
+                    m.reply = None;
+                    m.outgoing = true;
+                    m.permissions = None;
+                    m.album = if messages.len() > 1 { album } else { 0 };
+                    m.date = BASE_DATE + self.sent as i32 * 60;
+                    m.sender = None;
+                    m.sender_id = 0;
+                    forwarded.push(m);
+                }
+                let mut changes = self.changes.lock().map_err(|_| action_error())?;
+                if changes.entries.len() + forwarded.len() > 512 {
+                    return Err(action_error());
+                }
+                for m in forwarded {
+                    changes.entries.insert((to, m.id), Some(m.clone()));
+                    sink.post(Event::NewMessage(m));
+                }
+            }
             Command::DownloadFile(id) => {
                 // A bounded file notification uses the same domain path as updateFile.
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
@@ -136,6 +250,9 @@ impl Demo {
                         messages.remove(0);
                     }
                 }
+                if let Ok(changes) = self.changes.lock() {
+                    changes.apply(&mut event);
+                }
                 if let Event::MessagesLoaded { messages, .. } = event {
                     sink.post(Event::MessagesAroundLoaded {
                         chat,
@@ -162,22 +279,28 @@ impl Demo {
             Command::LoadMoreChats => sink.post(Event::ChatsLoaded { has_more: false }),
             Command::SendText { chat, text } => {
                 self.sent += 1;
-                sink.post(Event::NewMessage(Message {
-                    photo: None,
-                    id: MessageId(self.sent * 1048576),
-                    chat,
-                    date: BASE_DATE + self.sent as i32 * 60,
-                    outgoing: true,
-                    text,
-                    entities: vec![],
-                    send_state: SendState::Sent,
-                    album: 0,
-                    sender_id: 0,
-                    sender: None,
-                }));
+                let message = local_message(chat, self.sent, text);
+                self.remember(message.clone())?;
+                sink.post(Event::NewMessage(message));
             }
             _ => {}
         }
+        Ok(())
+    }
+    fn lookup(&self, chat: ChatId, id: MessageId) -> Option<Message> {
+        if let Ok(changes) = self.changes.lock()
+            && let Some(m) = changes.entries.get(&(chat, id))
+        {
+            return m.clone();
+        }
+        synthetic(chat, id, self.text_only)
+    }
+    fn remember(&self, m: Message) -> Result<(), tg_core::CommandError> {
+        let mut changes = self.changes.lock().map_err(|_| action_error())?;
+        if changes.entries.len() >= 512 && !changes.entries.contains_key(&(m.chat, m.id)) {
+            return Err(action_error());
+        }
+        changes.entries.insert((m.chat, m.id), Some(m));
         Ok(())
     }
     pub fn schedule_incoming(&self) {
@@ -191,6 +314,11 @@ impl Demo {
             .spawn(move || {
                 std::thread::sleep(Duration::from_secs(3));
                 let message = Message {
+                    reply: None,
+                    forwarded: None,
+                    edited: false,
+                    is_text: true,
+                    permissions: None,
                     chat: ChatId(3),
                     id: MessageId(20001 * 1048576),
                     date: BASE_DATE + 20001 * 60,
@@ -245,12 +373,17 @@ impl Demo {
         }
         let release = pending.clone();
         let text_only = self.text_only;
+        let changes = self.changes.clone();
         if std::thread::Builder::new()
             .name("tg-demo-page".into())
             .spawn(move || {
                 // A single artificial latency delay per request, never a sleeping loop or UI wait.
                 std::thread::sleep(Duration::from_millis(150));
-                let event = media_page(chat, cursor, newer, text_only);
+                let mut event = media_page(chat, cursor, newer, text_only);
+                if let Ok(changes) = changes.lock() {
+                    changes.apply(&mut event);
+                }
+
                 release.fetch_sub(1, Ordering::AcqRel);
                 sink.post(event);
             })
@@ -272,6 +405,7 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
             let n = message.id.0 / 1048576;
             match n % 20 {
                 0 => {
+                    message.is_text = false;
                     message.text = "Video".into();
                     message.entities.clear();
                 }
@@ -287,6 +421,7 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                     photo.width = width;
                     photo.height = height;
                     message.photo = Some(photo);
+                    message.is_text = false;
                     message.album = n - n % 20 + first;
                     message.text = if n % 20 == first {
                         format!("#{n}  Album / synthetic photos")
@@ -297,11 +432,13 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                 }
                 15 => {
                     message.photo = Some(demo_photo((100000 + n) as i32));
+                    message.is_text = false;
                     message.text = String::new();
                     message.entities.clear();
                 }
                 16 => {
                     message.photo = Some(demo_photo((100000 + n) as i32));
+                    message.is_text = false;
                     message.text = format!("#{n}  Mountain lake / synthetic photo caption");
                     message.entities.clear();
                 }
@@ -352,7 +489,7 @@ fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
         for entity in &mut entities { entity.offset+=prefix.len() as u32; }
         let outgoing = id % 3 == 0;
         let sender_id = if outgoing { 0 } else { 1000 + (id / 4) % 3 };
-        Message { album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
+        Message { reply: (id%6==4).then(||tg_core::Reply {resolved:true,chat,message:MessageId((id-3).max(1)*1048576),sender_id:1000,sender:"Anna Petrova".into(),preview:"Earlier synthetic message".into()}), forwarded: (id%9==0).then(||"Design review".into()), edited: outgoing && id%15==0, is_text: true, permissions: None, album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
     }).collect();
     if newer {
         Event::NewerMessagesLoaded {
@@ -428,5 +565,159 @@ mod tests {
         };
         assert!(messages.is_empty());
         assert_eq!(next_after, None);
+    }
+}
+
+#[derive(Default)]
+struct Changes {
+    // Demo-only mutation overlay; 512 edited/sent/deleted IDs, never the full history.
+    entries: std::collections::BTreeMap<(ChatId, MessageId), Option<Message>>,
+}
+impl Changes {
+    fn apply(&self, event: &mut Event) {
+        let (chat, cursor, newer, messages, next) = match event {
+            Event::MessagesLoaded {
+                chat,
+                before,
+                messages,
+                next_before,
+            } => (*chat, *before, false, messages, next_before),
+            Event::NewerMessagesLoaded {
+                chat,
+                after,
+                messages,
+                next_after,
+            } => (*chat, *after, true, messages, next_after),
+            _ => return,
+        };
+        messages.retain(|m| m.id.0 <= 20000 * 1048576);
+        for m in messages.iter_mut() {
+            if let Some(Some(replacement)) = self.entries.get(&(chat, m.id)) {
+                *m = replacement.clone();
+            }
+        }
+        messages.retain(|m| !matches!(self.entries.get(&(chat, m.id)), Some(None)));
+        for ((c, id), m) in &self.entries {
+            if *c != chat || id.0 <= 20000 * 1048576 {
+                continue;
+            }
+            let in_page = if newer {
+                *id > cursor && id.0 <= cursor.0 + 49 * 1048576
+            } else {
+                cursor.0 == 0 || (*id < cursor && id.0 >= cursor.0 - 50 * 1048576)
+            };
+            if in_page && let Some(m) = m {
+                messages.push(m.clone());
+            }
+        }
+        messages.sort_by_key(|m| m.id);
+        if messages.len() > 50 {
+            if newer {
+                messages.truncate(50)
+            } else {
+                messages.drain(..messages.len() - 50);
+            }
+        }
+        if let Some(id) = if newer {
+            messages.last()
+        } else {
+            messages.first()
+        }
+        .map(|m| m.id)
+        {
+            *next = Some(id);
+        }
+        messages.reverse();
+    }
+}
+fn action_error() -> tg_core::CommandError {
+    tg_core::CommandError {
+        code: -4,
+        message: "Demo action unavailable or 512 local changes exceeded.".into(),
+    }
+}
+fn quote(m: &Message) -> tg_core::Reply {
+    tg_core::Reply {
+        resolved: true,
+        chat: m.chat,
+        message: m.id,
+        sender_id: m.sender_id,
+        sender: m.sender.clone().unwrap_or_else(|| {
+            if m.outgoing {
+                "You".into()
+            } else {
+                "Message".into()
+            }
+        }),
+        preview: bounded_preview(&m.text),
+    }
+}
+fn bounded_preview(text: &str) -> String {
+    let mut s = text.replace(['\r', '\n'], " ");
+    let mut end = s.len().min(256);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s
+}
+fn synthetic(chat: ChatId, id: MessageId, text_only: bool) -> Option<Message> {
+    if id.0 <= 0 || id.0 > 20000 * 1048576 {
+        return None;
+    }
+    if let Event::MessagesLoaded { messages, .. } =
+        media_page(chat, MessageId(id.0 + 1048576), false, text_only)
+    {
+        messages.into_iter().find(|m| m.id == id)
+    } else {
+        None
+    }
+}
+fn local_message(chat: ChatId, sequence: i64, text: String) -> Message {
+    Message {
+        reply: None,
+        forwarded: None,
+        edited: false,
+        is_text: true,
+        permissions: None,
+        photo: None,
+        id: MessageId(sequence * 1048576),
+        chat,
+        date: BASE_DATE + sequence as i32 * 60,
+        outgoing: true,
+        text,
+        entities: vec![],
+        send_state: SendState::Sent,
+        album: 0,
+        sender_id: 0,
+        sender: None,
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+    #[test]
+    fn local_changes_survive_reopening_and_deleted_rows_stay_deleted() {
+        let mut changes = Changes::default();
+        let id = MessageId(19998 * 1048576);
+        let mut m = synthetic(ChatId(1), id, true).unwrap();
+        m.text = "Edited locally".into();
+        m.edited = true;
+        changes.entries.insert((ChatId(1), id), Some(m));
+        changes
+            .entries
+            .insert((ChatId(1), MessageId(19999 * 1048576)), None);
+        let mut event = media_page(ChatId(1), MessageId(0), false, true);
+        changes.apply(&mut event);
+        let Event::MessagesLoaded { messages, .. } = event else {
+            panic!("page")
+        };
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.id == id && m.edited && m.text == "Edited locally")
+        );
+        assert!(!messages.iter().any(|m| m.id == MessageId(19999 * 1048576)));
     }
 }

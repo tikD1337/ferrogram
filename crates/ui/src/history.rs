@@ -9,6 +9,7 @@ pub(crate) struct History {
     pub newer: Option<MessageId>,
     pub pending_older: Option<MessageId>,
     pub pending_newer: Option<MessageId>,
+    pub pending_around: Option<MessageId>,
     pub latest_requested: bool,
 }
 impl History {
@@ -19,14 +20,19 @@ impl History {
             ..Self::default()
         };
     }
-    pub fn open_around(&mut self, chat: ChatId) {
+    pub fn open_around(&mut self, chat: ChatId, anchor: MessageId) {
         self.open(chat);
         self.pending_older = None;
+        self.pending_around = Some(anchor);
     }
     pub fn around(&mut self, chat: ChatId, messages: Vec<Message>, anchor: MessageId) -> bool {
-        if self.chat != Some(chat) || !self.messages.is_empty() {
+        if self.chat != Some(chat)
+            || self.pending_around != Some(anchor)
+            || !self.messages.is_empty()
+        {
             return false;
         }
+        self.pending_around = None;
         self.messages = messages
             .into_iter()
             .filter(|m| m.chat == chat)
@@ -42,6 +48,11 @@ impl History {
         self.pending_older = None;
         self.pending_newer = None;
         true
+    }
+    pub fn remove(&mut self, chat: ChatId, ids: &[MessageId]) {
+        if self.chat == Some(chat) {
+            self.messages.retain(|m| !ids.contains(&m.id));
+        }
     }
     pub fn at_tail(&self) -> bool {
         self.newer.is_none()
@@ -163,6 +174,11 @@ mod tests {
     }
     fn message(n: i64) -> Message {
         Message {
+            reply: None,
+            forwarded: None,
+            edited: false,
+            is_text: true,
+            permissions: None,
             photo: None,
             id: id(n),
             chat: ChatId(1),
@@ -195,8 +211,9 @@ mod tests {
     #[test]
     fn around_first_unread_keeps_both_real_cursors_and_rejects_stale_chat() {
         let mut h = History::default();
-        h.open_around(ChatId(1));
+        h.open_around(ChatId(1), id(19980));
         assert!(!h.around(ChatId(2), vec![message(20000)], id(19980)));
+        assert!(!h.around(ChatId(1), vec![message(20000)], id(19800)));
         assert!(h.around(ChatId(1), (19955..=20004).map(message).collect(), id(19980)));
         assert_eq!(h.request_older(), Some(id(19955)));
         assert_eq!(h.request_newer(), Some(id(20004)));
@@ -307,5 +324,22 @@ mod tests {
         h.request_older();
         h.page(ChatId(1), id(50), None, vec![], false);
         assert_eq!(h.older, None);
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+    #[test]
+    fn delete_does_not_reset_paging_or_remove_another_chat() {
+        let mut h = History::default();
+        h.open(ChatId(7));
+        let cursor = MessageId(20971520000);
+        h.older = Some(cursor);
+        h.newer = Some(cursor);
+        h.remove(ChatId(8), &[cursor]);
+        h.remove(ChatId(7), &[cursor]);
+        assert_eq!(h.older, Some(cursor));
+        assert_eq!(h.newer, Some(cursor));
     }
 }

@@ -68,6 +68,11 @@ fn chat() -> tg_core::Chat {
 }
 fn message() -> tg_core::Message {
     tg_core::Message {
+        reply: None,
+        forwarded: None,
+        edited: false,
+        is_text: true,
+        permissions: None,
         id: MessageId(2097152),
         chat: ChatId(7),
         date: 1,

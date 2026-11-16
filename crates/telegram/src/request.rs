@@ -8,6 +8,62 @@ use crate::mapping::{MAX_LINK_BYTES, MAX_TEXT_BYTES, PAGE_SIZE, error};
 
 pub(crate) fn encode(command: Command) -> Result<Value, CommandError> {
     let (mut request, tag) = match command {
+        Command::ReplyText { chat, reply, text } => {
+            valid_id(reply)?;
+            check_input(&text, MAX_TEXT_BYTES)?;
+            (
+                json!({"@type":"sendMessage","chat_id":chat.0,
+                "reply_to":{"@type":"inputMessageReplyToMessage","message_id":reply.0},
+                "input_message_content":input_text(text)}),
+                "send_text",
+            )
+        }
+        Command::EditText {
+            chat,
+            message,
+            text,
+        } => {
+            valid_id(message)?;
+            check_input(&text, MAX_TEXT_BYTES)?;
+            (
+                json!({"@type":"editMessageText","chat_id":chat.0,"message_id":message.0,
+                "input_message_content":input_text(text)}),
+                "edit_text",
+            )
+        }
+        Command::DeleteMessages {
+            chat,
+            messages,
+            revoke,
+        } => {
+            let ids = album_ids(messages)?;
+            (
+                json!({"@type":"deleteMessages","chat_id":chat.0,"message_ids":ids,"revoke":revoke}),
+                "delete",
+            )
+        }
+        Command::ForwardMessages { from, to, messages } => {
+            let ids = album_ids(messages)?;
+            (
+                json!({"@type":"forwardMessages","from_chat_id":from.0,"chat_id":to.0,
+                "message_ids":ids,"send_copy":false,"remove_caption":false}),
+                "forward",
+            )
+        }
+        Command::GetRepliedMessage { chat, message } => {
+            valid_id(message)?;
+            return Ok(
+                json!({"@type":"getRepliedMessage","chat_id":chat.0,"message_id":message.0,
+                "@extra":{"command":"replied","chat":chat.0,"message":message.0}}),
+            );
+        }
+        Command::GetMessageProperties { chat, message } => {
+            valid_id(message)?;
+            return Ok(
+                json!({"@type":"getMessageProperties","chat_id":chat.0,"message_id":message.0,
+                "@extra":{"command":"properties","chat":chat.0,"message":message.0}}),
+            );
+        }
         Command::ViewMessages { chat, messages } => {
             if messages.is_empty() || messages.len() > 50 || messages.iter().any(|id| id.0 <= 0) {
                 return Err(error(-2, "Invalid visible-message batch."));
@@ -118,6 +174,27 @@ pub(crate) fn around(chat: ChatId, anchor: MessageId) -> Value {
         "@extra":{"command":"history_around","chat":chat.0,"anchor":anchor.0}})
 }
 
+fn input_text(text: String) -> Value {
+    json!({"@type":"inputMessageText","text":{"@type":"formattedText","text":text,"entities":[]},"clear_draft":true})
+}
+fn valid_id(id: MessageId) -> Result<(), CommandError> {
+    if id.0 <= 0 {
+        return Err(error(-2, "Invalid message ID."));
+    }
+    Ok(())
+}
+fn album_ids(messages: Vec<MessageId>) -> Result<Vec<i64>, CommandError> {
+    if messages.is_empty() || messages.len() > 10 || messages.windows(2).any(|p| p[0] >= p[1]) {
+        return Err(error(-2, "Invalid message action batch."));
+    }
+    messages
+        .into_iter()
+        .map(|id| {
+            valid_id(id)?;
+            Ok(id.0)
+        })
+        .collect()
+}
 fn check_input(value: &str, limit: usize) -> Result<(), CommandError> {
     if value.is_empty() || value.len() > limit {
         return Err(error(-2, "Input is empty or exceeds the size limit."));
@@ -261,5 +338,64 @@ mod attention_tests {
         assert_eq!(request["offset"], -25);
         assert_eq!(request["limit"], 50);
         assert_eq!(around(ChatId(7), MessageId(0))["from_message_id"], 0);
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+    #[test]
+    fn reply_edit_delete_forward_keep_real_ids_and_bound_albums() {
+        let chat = ChatId(7);
+        let id = MessageId(20971520000);
+        let r = encode(Command::ReplyText {
+            chat,
+            reply: id,
+            text: "reply".into(),
+        })
+        .unwrap();
+        assert_eq!(r["reply_to"]["@type"], "inputMessageReplyToMessage");
+        assert_eq!(r["reply_to"]["message_id"], id.0);
+        let r = encode(Command::EditText {
+            chat,
+            message: id,
+            text: "edit".into(),
+        })
+        .unwrap();
+        assert_eq!(r["@type"], "editMessageText");
+        assert_eq!(r["message_id"], id.0);
+        let r = encode(Command::DeleteMessages {
+            chat,
+            messages: vec![id],
+            revoke: true,
+        })
+        .unwrap();
+        assert_eq!(r["@type"], "deleteMessages");
+        assert_eq!(r["revoke"], true);
+        let r = encode(Command::ForwardMessages {
+            from: chat,
+            to: ChatId(8),
+            messages: vec![id, MessageId(id.0 + 1048576)],
+        })
+        .unwrap();
+        assert_eq!(r["@type"], "forwardMessages");
+        assert_eq!(r["from_chat_id"], 7);
+        assert_eq!(r["message_ids"].as_array().unwrap().len(), 2);
+        assert!(
+            encode(Command::DeleteMessages {
+                chat,
+                messages: vec![id; 11],
+                revoke: false
+            })
+            .is_err()
+        );
+        assert!(
+            encode(Command::ForwardMessages {
+                from: chat,
+                to: chat,
+                messages: vec![]
+            })
+            .is_err()
+        );
     }
 }

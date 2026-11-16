@@ -481,3 +481,60 @@ fn around_history_live_origin_read_completion_and_global_unread_are_distinct() {
         vec![Event::TotalUnreadCount(123)]
     );
 }
+
+#[test]
+fn actions_map_reply_forward_edit_and_permanent_deletions() {
+    use serde_json::json;
+    let mut d = Decoder::default();
+    let value = json!({"@type":"updateNewMessage","message": {
+        "id":20971520000_i64,"chat_id":7,"date":10,"edit_date":11,"is_outgoing":true,
+        "reply_to":{"@type":"messageReplyToMessage","chat_id":7,"message_id":20968374272_i64,
+            "origin":{"@type":"messageOriginHiddenUser","sender_name":"\u{754c}".repeat(100)},
+            "quote":{"text":{"text":"\u{1f642}".repeat(100)}}},
+        "forward_info":{"origin":{"@type":"messageOriginHiddenUser","sender_name":"e".repeat(200)}},
+        "content":{"@type":"messageText","text":{"text":"updated","entities":[]}}
+    }});
+    let events = decode(&mut d, &value.to_string());
+    let Event::IncomingMessage(m) = &events[0] else {
+        panic!("message")
+    };
+    assert!(m.edited && m.is_text);
+    let r = m.reply.as_ref().unwrap();
+    assert_eq!(r.message, MessageId(20968374272));
+    assert!(
+        r.sender.len() <= 256
+            && r.preview.len() <= 256
+            && m.forwarded.as_ref().unwrap().len() <= 256
+    );
+    let events = decode(
+        &mut d,
+        &json!({"@type":"updateMessageContent","chat_id":7,"message_id":20971520000_i64,
+        "new_content":{"@type":"messageText","text":{"text":"changed","entities":[]}}})
+        .to_string(),
+    );
+    assert!(matches!(&events[0],Event::MessageContentChanged {text,..} if text=="changed"));
+    let events=decode(&mut d,&json!({"@type":"updateMessageEdited","chat_id":7,"message_id":20971520000_i64,"edit_date":12}).to_string());
+    assert!(matches!(
+        events[0],
+        Event::MessageEdited { edited: true, .. }
+    ));
+    let mut deletion = json!({"@type":"updateDeleteMessages","chat_id":7,"message_ids":[20971520000_i64],"is_permanent":false});
+    assert!(decode(&mut d, &deletion.to_string()).is_empty());
+    deletion["is_permanent"] = json!(true);
+    let events = decode(&mut d, &deletion.to_string());
+    assert!(
+        matches!(&events[0],Event::MessagesDeleted {messages,..} if messages==&[MessageId(20971520000)])
+    );
+}
+#[test]
+fn replied_message_resolves_names_without_a_retained_engine_history() {
+    use serde_json::json;
+    let mut d = Decoder::default();
+    let value = json!({"@type":"message","id":20968374272_i64,"chat_id":7,"date":10,"is_outgoing":true,
+        "content":{"@type":"messageText","text":{"text":"Original\nmessage","entities":[]}},
+        "@extra":{"command":"replied","chat":7,"message":20971520000_i64}});
+    let events = decode(&mut d, &value.to_string());
+    assert!(
+        matches!(&events[0],Event::ReplyResolved {reply:Some(r),..} if r.sender=="You" && r.preview=="Original message" && r.resolved)
+    );
+}

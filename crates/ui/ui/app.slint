@@ -23,6 +23,10 @@ export struct ChatRow { avatar: image, initials: string, color: color, title: st
 export struct PhotoCell { image: image, label: string, x: length, y: length, width: length, height: length }
 // One feed row: a date separator (optional) and one bubble holding a message or an album.
 export struct MessageRow {
+    key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
+    highlighted: bool, forwarded: string, sender-y: length,
+    has-quote: bool, quote-y: length, quote-sender: string, quote-preview: string, quote-color: color,
+    time-label-width: length,
     row-y: length, height: length, date: string, unread: bool, unread-y: length,
     bubble-y: length, bubble-width: length, bubble-height: length, outgoing: bool, tail: bool,
     sender: string, sender-color: color,
@@ -138,7 +142,34 @@ export component AppWindow inherits Window {
     callback send();
     callback logout();
     callback demo-toggle();
+    callback clear-highlight();
+    in-out property <bool> composer-focus;
+    public function focus-composer() { root.composer-focus = !root.composer-focus; }
     callback latest();
+    // Action IDs: 0 reply, 1 edit, 2 copy, 3 forward, 4 delete, 5 open quote.
+    callback message-action(key: string, action: int);
+    callback cancel-action();
+    callback confirm-delete();
+    callback forward-to(index: int);
+    callback filter-destinations(query: string);
+    in property <[ChatRow]> destinations;
+    in-out property <string> forward-query;
+    changed forward-query => { root.filter-destinations(root.forward-query); }
+    in property <string> composer-title;
+    in property <string> composer-preview;
+    in property <bool> editing;
+    in property <bool> edit-saving;
+    in-out property <length> destination-y;
+    changed destination-y => { root.chat-viewport-changed(); }
+    // 0 closed, 1 delete confirmation, 2 forward destination.
+    in-out property <int> action-dialog;
+    in property <bool> can-revoke;
+    in property <bool> must-revoke;
+    in-out property <bool> revoke;
+    public function copy-text(value: string) {
+        clipboard.text = value; clipboard.select-all(); clipboard.copy(); clipboard.text = "";
+    }
+    clipboard := TextInput { visible: false; }
     in-out property <bool> follow-tail: true;
     VerticalLayout {
         padding: 0px; spacing: 0px;
@@ -272,12 +303,34 @@ export component AppWindow inherits Window {
                                 Rectangle {
                                     x: msg.outgoing ? parent.width - msg.bubble-width - 14px : 14px;
                                     y: msg.bubble-y; width: msg.bubble-width; height: msg.bubble-height;
-                                    background: msg.outgoing ? Theme.outgoing : Theme.incoming;
+                                    background: msg.highlighted ? #386080 : msg.outgoing ? Theme.outgoing : Theme.incoming;
                                     border-top-left-radius: 12px; border-top-right-radius: 12px;
                                     border-bottom-left-radius: !msg.outgoing && msg.tail ? 4px : 12px;
                                     border-bottom-right-radius: msg.outgoing && msg.tail ? 4px : 12px;
+                                    ContextMenuArea {
+                                        enabled: !root.blocked && root.action-dialog == 0;
+                                        Menu {
+                                            MenuItem { title: "Reply"; enabled: msg.can-reply; activated => { root.message-action(msg.key, 0); } }
+                                            if msg.can-edit: MenuItem { title: "Edit"; activated => { root.message-action(msg.key, 1); } }
+                                            MenuItem { title: "Copy text"; activated => { root.message-action(msg.key, 2); } }
+                                            MenuItem { title: "Forward"; enabled: msg.can-forward; activated => { root.message-action(msg.key, 3); } }
+                                            MenuItem { title: "Delete"; enabled: msg.can-delete; activated => { root.message-action(msg.key, 4); } }
+                                        }
+                                    }
+                                    if msg.forwarded != "": Text {
+                                        x: 10px; y: 6px; height: 18px; width: parent.width - 20px;
+                                        text: msg.forwarded; color: Theme.accent; font-size: 13px; overflow: elide;
+                                    }
+                                    if msg.has-quote: Rectangle {
+                                        x: 10px; y: msg.quote-y; width: parent.width - 20px; height: 40px;
+                                        background: #6ab3f312; border-radius: 4px;
+                                        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: msg.quote-color; }
+                                        Text { x: 9px; y: 2px; width: parent.width - 18px; height: 17px; text: msg.quote-sender; color: msg.quote-color; font-size: 13px; font-weight: 600; overflow: elide; }
+                                        Text { x: 9px; y: 20px; width: parent.width - 18px; height: 17px; text: msg.quote-preview; color: Theme.text; font-size: 13px; overflow: elide; }
+                                        TouchArea { clicked => { root.message-action(msg.key, 5); } }
+                                    }
                                     if msg.sender != "": Text {
-                                        x: 10px; y: 6px; width: parent.width - 20px; height: 18px;
+                                        x: 10px; y: msg.sender-y; width: parent.width - 20px; height: 18px;
                                         text: msg.sender; color: msg.sender-color; font-size: 13px; font-weight: 600; overflow: elide;
                                     }
                                     if msg.media-height > 0px: Rectangle {
@@ -295,27 +348,27 @@ export component AppWindow inherits Window {
                                     if msg.text-height > 0px: Image { x: 10px; y: msg.text-y; width: msg.text-width; height: msg.text-height; source: msg.rendered; }
                                     if msg.time-over-media: Rectangle {
                                         x: msg.time-x - 6px; y: msg.time-y - 2px; height: 18px; border-radius: 9px; background: #00000070;
-                                        width: (msg.checks != 0 ? 50px : 32px) + 12px;
+                                        width: msg.time-label-width + (msg.checks != 0 ? 18px : 0px) + 12px;
                                     }
                                     Text {
-                                        x: msg.time-x; y: msg.time-y; width: 32px; height: 14px; text: msg.time; font-size: 12px;
+                                        x: msg.time-x; y: msg.time-y; width: msg.time-label-width; height: 14px; text: msg.time; font-size: 12px;
                                         horizontal-alignment: right; vertical-alignment: center;
                                         color: msg.time-over-media ? #ffffff : msg.outgoing ? Theme.time-out : Theme.time-in;
                                     }
                                     if msg.checks > 0: Path {
-                                        x: msg.time-x + 35px; y: msg.time-y + 2px; width: 15px; height: 10px;
+                                        x: msg.time-x + msg.time-label-width + 3px; y: msg.time-y + 2px; width: 15px; height: 10px;
                                         viewbox-width: 15; viewbox-height: 10; fill: transparent; stroke-width: 1.5px;
                                         stroke: msg.time-over-media ? #ffffff : Theme.check;
                                         commands: msg.checks == 2 ? "M0.5 5 L4 8.5 L10.5 1.5 M6 7.5 L7 8.5 L14 1.5" : "M2.5 5 L6 8.5 L12.5 1.5";
                                     }
                                     if msg.checks == -1: Path {
-                                        x: msg.time-x + 36px; y: msg.time-y + 1px; width: 12px; height: 12px;
+                                        x: msg.time-x + msg.time-label-width + 4px; y: msg.time-y + 1px; width: 12px; height: 12px;
                                         viewbox-width: 12; viewbox-height: 12; fill: transparent; stroke-width: 1.2px;
                                         stroke: msg.time-over-media ? #ffffff : Theme.time-out;
                                         commands: "M6 0.8 A5.2 5.2 0 1 0 6.01 0.8 M6 3 L6 6 L8 7.2";
                                     }
                                     if msg.checks == -2: Rectangle {
-                                        x: msg.time-x + 36px; y: msg.time-y; width: 14px; height: 14px; border-radius: 7px; background: #e5505a;
+                                        x: msg.time-x + msg.time-label-width + 4px; y: msg.time-y; width: 14px; height: 14px; border-radius: 7px; background: #e5505a;
                                         Text { text: "!"; color: #ffffff; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                                     }
                                 }
@@ -337,15 +390,25 @@ export component AppWindow inherits Window {
                             down-touch := TouchArea { enabled: !root.blocked; clicked => { root.latest(); } }
                         }
                     }
+                    if root.chat-open && root.composer-title != "": Rectangle {
+                        height: 50px; background: Theme.panel;
+                        Rectangle { x: 16px; y: 6px; width: 3px; height: 38px; background: Theme.accent; }
+                        Text { x: 27px; y: 6px; height: 18px; width: parent.width - 80px; text: root.composer-title; color: Theme.accent; font-size: 13px; font-weight: 600; overflow: elide; }
+                        Text { x: 27px; y: 25px; height: 18px; width: parent.width - 80px; text: root.composer-preview; color: Theme.muted; font-size: 13px; overflow: elide; }
+                        Link { x: parent.width - 72px; y: 8px; width: 64px; text: "Cancel"; clicked => { root.cancel-action(); } }
+                    }
                     if root.chat-open: Rectangle {
                         height: max(52px, min(170px, composer.preferred-height + 30px)); background: Theme.panel;
                         Rectangle { height: 1px; y: 0px; background: Theme.border; }
                         composer := TextInput {
+                            in property <bool> focus-request: root.composer-focus;
+                            changed focus-request => { self.focus(); }
                             x: 18px; y: 15px; width: parent.width - 18px - 60px; height: parent.height - 30px;
                             text <=> root.draft; color: Theme.text; font-size: 14px; wrap: word-wrap;
                             selection-background-color: #2b5278; selection-foreground-color: #ffffff;
                             enabled: !root.blocked;
                             key-pressed(event) => {
+                                if event.text == Key.Escape { root.cancel-action(); return accept; }
                                 if event.text == Key.Return && !event.modifiers.shift { root.send(); return accept; }
                                 return reject;
                             }
@@ -357,11 +420,52 @@ export component AppWindow inherits Window {
                             Path { x: 9px; y: 10px; width: 22px; height: 20px; viewbox-width: 24; viewbox-height: 20;
                                 fill: root.draft != "" ? Theme.accent : #4f5f70;
                                 commands: "M1 9 L22 1 L18 19 L12 14 L9 18 L8 12 L18 4 L7 11 Z"; }
-                            send-touch := TouchArea { enabled: !root.blocked && root.draft != ""; clicked => { root.send(); } }
+                            send-touch := TouchArea { enabled: !root.blocked && !root.edit-saving && root.draft != ""; clicked => { root.send(); } }
                         }
                     }
                 }
             }
         }
     }
+    if root.action-dialog != 0: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => { if event.text == Key.Escape { root.cancel-action(); return accept; } return reject; }
+        }
+        Rectangle {
+            width: 420px; height: root.action-dialog == 1 ? 220px : 440px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            border-radius: 10px; background: Theme.panel;
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: root.action-dialog == 1 ? "Delete message?" : "Forward to"; color: Theme.text; font-size: 19px; font-weight: 600; }
+                if root.action-dialog == 1: Text { text: "Delete the selected message or entire album?"; color: Theme.muted; font-size: 14px; wrap: word-wrap; }
+                if root.action-dialog == 1 && root.can-revoke: Rectangle {
+                    height: 38px;
+                    Rectangle { x: 0px; y: 9px; width: 18px; height: 18px; border-radius: 3px; border-width: 1px; border-color: Theme.accent; background: root.revoke ? Theme.badge : transparent;
+                        if root.revoke: Path { x: 3px; y: 4px; width: 12px; height: 9px; viewbox-width: 12; viewbox-height: 9; fill: transparent; stroke: #ffffff; stroke-width: 2px; commands: "M1 4 L4 7 L11 1"; }
+                    }
+                    Text { x: 28px; width: parent.width - 28px; text: "Also delete for " + root.chat-title; color: Theme.text; font-size: 14px; overflow: elide; vertical-alignment: center; }
+                    TouchArea { enabled: !root.must-revoke; clicked => { root.revoke = !root.revoke; } }
+                }
+                if root.action-dialog == 2: Input { text <=> root.forward-query; }
+                if root.action-dialog == 2: ListView {
+                    scrolled => { root.destination-y = self.content-y; }
+                    for chat[index] in root.destinations: Rectangle {
+                        height: 52px; background: dest-touch.has-hover ? Theme.hover : transparent;
+                        Avatar { x: 4px; y: 5px; width: 40px; height: 40px; source: chat.avatar; initials: chat.initials; tint: chat.color; }
+                        Text { x: 56px; width: parent.width - 62px; height: parent.height; text: chat.title; color: Theme.text; font-size: 14px; vertical-alignment: center; overflow: elide; }
+                        dest-touch := TouchArea { clicked => { root.forward-to(index); } }
+                    }
+                }
+                HorizontalLayout { alignment: end; spacing: 12px;
+                    Link { text: "Cancel"; width: 100px; clicked => { root.cancel-action(); } }
+                    if root.action-dialog == 1: Action { text: "Delete"; width: 100px; clicked => { root.confirm-delete(); } }
+                }
+            }
+        }
+    }
+
 }

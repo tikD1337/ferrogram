@@ -5,6 +5,12 @@ use crate::{ChatId, MessageId, Secret};
 /// Non-secret command identity for associating an error with a UI action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
+    ReplyText,
+    EditText,
+    DeleteMessages,
+    ForwardMessages,
+    GetMessageProperties,
+    GetRepliedMessage,
     ViewMessages,
     DownloadFile,
     CancelDownload,
@@ -30,6 +36,35 @@ pub enum CommandKind {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Command {
+    ReplyText {
+        chat: ChatId,
+        reply: MessageId,
+        text: String,
+    },
+    EditText {
+        chat: ChatId,
+        message: MessageId,
+        text: String,
+    },
+    /// One album at most (10 IDs), ascending order.
+    DeleteMessages {
+        chat: ChatId,
+        messages: Vec<MessageId>,
+        revoke: bool,
+    },
+    ForwardMessages {
+        from: ChatId,
+        to: ChatId,
+        messages: Vec<MessageId>,
+    },
+    GetRepliedMessage {
+        chat: ChatId,
+        message: MessageId,
+    },
+    GetMessageProperties {
+        chat: ChatId,
+        message: MessageId,
+    },
     /// Report only actually visible incoming IDs; at most 50 per request.
     ViewMessages {
         chat: ChatId,
