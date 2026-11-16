@@ -1,0 +1,180 @@
+<div align="center">
+
+<img src="docs/images/icon.png" width="128" alt="tg-rust icon">
+
+# tg-rust
+
+**A native Telegram client for Windows that stays light.**<br>
+Written in Rust. About 8× less memory than Telegram Desktop, measured.
+
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-17212B?style=flat-square&logo=windows&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-1.100-D9822B?style=flat-square&logo=rust&logoColor=white)
+![UI](https://img.shields.io/badge/UI-Slint-3E88C7?style=flat-square)
+![Protocol](https://img.shields.io/badge/protocol-TDLib%201.8.70-3E88C7?style=flat-square)
+![License](https://img.shields.io/badge/license-GPL--3.0--or--later-6B7C8F?style=flat-square)
+![Status](https://img.shields.io/badge/status-early%20development-D9822B?style=flat-square)
+
+[Features](#-features) · [Numbers](#-numbers) · [Try it](#-try-it) · [How it works](#%EF%B8%8F-how-it-works) · [Roadmap](docs/ROADMAP.md)
+
+</div>
+
+> [!IMPORTANT]
+> **tg-rust is an unofficial client in early development.** It is not affiliated with or endorsed
+> by Telegram. It uses the official [TDLib](https://github.com/tdlib/td) library and your own API
+> credentials. Expect missing features and rough edges.
+
+## 📸 Screenshots
+
+> [!NOTE]
+> These screenshots show an **unfinished work-in-progress build** running in demo mode with
+> synthetic data (no real account). The interface is not final and will change.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/screenshot-chat.png" alt="Chat with an album, formatting and unread messages"></td>
+    <td width="50%"><img src="docs/images/screenshot-oled.png" alt="The same chat in the OLED theme"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Night theme: albums, formatting, read checks, unread separator</sub></td>
+    <td align="center"><sub>OLED theme: true black for OLED screens</sub></td>
+  </tr>
+</table>
+
+## ✨ Why
+
+| | |
+|---|---|
+| 🪶 **Light** | Every cache has a size limit in bytes. History is paged in and out while you scroll; the whole chat is never held in memory. |
+| ⚡ **Quiet** | No polling and no timers while idle: the client sleeps until Telegram sends something. |
+| 🔒 **Careful** | The local Telegram database is encrypted with a random key protected by the TPM and Windows DPAPI. No custom cryptography. |
+| 🦀 **Native** | Rust, a software-rendered [Slint](https://slint.dev) UI and the official TDLib. No browser engine, no Electron, no Qt. |
+
+## 📊 Numbers
+
+Ten minutes idle on the same account, all three clients running at the same time on one machine.
+Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+<p align="center">
+  <img src="docs/images/chart-memory.svg" alt="Memory: tg-rust 57.5 MB, Telegram Desktop 465.0 MB, AyuGram 541.6 MB" width="720"><br><br>
+  <img src="docs/images/chart-cpu.svg" alt="CPU: tg-rust 0.25 %, Telegram Desktop 0.37 %, AyuGram 0.55 %" width="720">
+</p>
+
+| Client | Private Bytes | CPU, % of one core | Threads |
+|---|---:|---:|---:|
+| **tg-rust** | **57.5 MB** | **0.25** | **11** |
+| Telegram Desktop | 465.0 MB | 0.37 | 80 |
+| AyuGram | 541.6 MB | 0.55 | 88 |
+
+<sub>One machine, one account, one run. Your numbers will differ; the method is documented so you can repeat it.</sub>
+
+## 🧩 Features
+
+**Works today**
+
+- [x] Sign-in with a QR code or a phone number
+- [x] Chat list with avatars, last message time, unread and mention badges, muted chats
+- [x] Seamless history: pages load and unload while you scroll, without jumps
+- [x] Opens a chat at the first unread message; marks messages read when you actually see them ¹
+- [x] Text with formatting, links, spoilers, right-to-left scripts and colour emoji
+- [x] Photos with captions, albums as one bubble with a photo grid ¹
+- [x] Date separators, sender names in groups, read checks ¹
+- [x] Sending text messages
+- [x] Desktop notifications that open the chat ¹
+- [x] Night and OLED themes
+
+<sub>¹ New: tested in demo mode, not yet on a live account.</sub>
+
+**Not yet** — see the [roadmap](docs/ROADMAP.md)
+
+- [ ] Video (GPU playback is being measured), voice messages, stickers, files
+- [ ] Replies, editing, deleting, forwarding, reactions
+- [ ] Search, folders, settings
+- [ ] Calls, channels with comments, bots, polls
+
+## 🚀 Try it
+
+### Demo mode, no account needed
+
+`--demo` runs the whole interface on synthetic data, with no account, network or key files:
+
+```powershell
+cargo run --release -p tg-app -- --demo
+```
+
+### With your account
+
+1. Install rustup, MSVC Build Tools and CMake, and build TDLib: [docs/SETUP.md](docs/SETUP.md).
+2. Get an `api_id` and `api_hash` at <https://my.telegram.org>.
+3. Copy `.env.example` to `.env` and fill in both values. Never commit that file.
+4. Run:
+
+```powershell
+cargo run --release -p tg-app
+```
+
+## ⚙️ How it works
+
+```mermaid
+flowchart LR
+    UI["tg-ui<br/>Slint, software renderer"] -- "Command" --> CORE(("tg-core<br/>commands and events"))
+    CORE -- "Event" --> UI
+    CORE <--> ENGINE["tg-telegram<br/>one TDLib thread"]
+    ENGINE <--> TDLIB[("TDLib<br/>tdjson.dll")]
+    APP["tg-app<br/>wiring"] --- UI
+    APP --- ENGINE
+    APP --- SEC["tg-security<br/>TPM + DPAPI key"]
+    APP --- PLAT["tg-platform<br/>notifications"]
+```
+
+- The UI and the engine talk only through plain types from `tg-core`; only `tg-telegram` touches
+  TDLib, and only `tg-ui` touches the GUI toolkit.
+- One engine thread blocks on TDLib and wakes only when an update arrives.
+- Message text is shaped with [parley](https://github.com/linebender/parley) and rasterized with
+  [swash](https://github.com/dfrg/swash) only for the rows on screen.
+- Photos are decoded off the UI thread to the size actually shown, into one image cache limited
+  to 24 MB.
+
+Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## 🔒 Security
+
+- The TDLib database key is 32 random bytes, wrapped by a non-exportable TPM key and then by
+  Windows DPAPI. It is designed so that a copied data folder cannot be opened on another
+  computer; that scenario has not been tested yet.
+- Secrets never reach logs; API credentials stay in `.env`, outside git.
+- Found a vulnerability? Please report it privately, see [docs/SECURITY.md](docs/SECURITY.md).
+
+<details>
+<summary><b>📁 Repository layout</b></summary>
+
+| Path | Purpose |
+|---|---|
+| `crates/app` | Entry point, demo backend |
+| `crates/core` | Domain model: commands and events shared by the UI and the engine |
+| `crates/telegram` | TDLib-based engine; the only crate that talks to TDLib |
+| `crates/ui` | Slint user interface; the only crate that uses Slint |
+| `crates/security` | Database key protection (TPM, DPAPI) |
+| `crates/platform` | Windows integration: notifications |
+| `spikes/` | Throwaway prototypes used for measurements, not part of the product |
+| `scripts/` | Resource measurement and TDLib build scripts |
+| `bench/results/` | Raw measurement data |
+| `docs/` | Architecture, benchmarks, security, roadmap, setup |
+
+</details>
+
+<details>
+<summary><b>🛠️ Development checks</b></summary>
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo check --workspace
+cargo test --workspace
+```
+
+</details>
+
+## 📄 License
+
+[GPL-3.0-or-later](LICENSE). Telegram is a trademark of its respective owner; this project is
+an independent, unofficial client.

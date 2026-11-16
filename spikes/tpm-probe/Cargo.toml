@@ -1,0 +1,12 @@
+# Disposable probe: does the TPM (Microsoft Platform Crypto Provider) on this machine wrap and
+# unwrap a 32-byte key with a non-exportable RSA key, and with which OAEP hash?
+[package]
+name = "tpm-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

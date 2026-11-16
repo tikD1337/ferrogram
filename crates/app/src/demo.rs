@@ -1,0 +1,432 @@
+//! Synthetic local backend. No TDLib, credentials, data-directory or key access.
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
+use tg_core::{
+    AuthState, Chat, ChatId, ChatListChange, Command, EntityKind, Event, Message, MessageId,
+    MessagePreview, SendState, TextEntity,
+};
+use tg_ui::EventSink;
+/// Synthetic history starts on 2026-11-02 and has one message per minute.
+const BASE_DATE: i32 = 1_793_620_800;
+const NAMES: [&str; 3] = ["Anna Petrova", "Boris", "Clara Weber"];
+pub(crate) struct Demo {
+    pub sink: Option<EventSink>,
+    media_path: std::path::PathBuf,
+    text_only: bool,
+    sent: i64,
+    // Four synthetic metadata rows; no retained full message history.
+    chats: Arc<std::sync::Mutex<Vec<Chat>>>,
+    // At most two delayed page workers, one per direction; no retained full history.
+    pending: Arc<AtomicUsize>,
+}
+impl Demo {
+    pub fn new(media_path: std::path::PathBuf, text_only: bool) -> Self {
+        Self {
+            sink: None,
+            media_path,
+            text_only,
+            sent: 20000,
+            chats: Arc::default(),
+            pending: Arc::default(),
+        }
+    }
+    pub fn seed(&mut self) {
+        let Some(sink) = &self.sink else { return };
+        sink.post(Event::AuthStateChanged(AuthState::Ready));
+        let chats = [
+            (
+                "History / 20,000 messages",
+                "Synthetic paged history / 150 ms latency",
+                14,
+            ),
+            ("Saved Messages", "cargo build --release -p tg-app", 0),
+            ("Design review", "Albums now show as one bubble", 3),
+            ("Weekend trip", "Photo", 12),
+        ];
+        for (position, (title, text, unread)) in chats.into_iter().enumerate() {
+            let id = position as i64 + 1;
+            let chat = Chat {
+                avatar: (!self.text_only && id == 1).then(|| demo_photo(1)),
+                id: ChatId(id),
+                title: title.into(),
+                last_message: Some(MessagePreview {
+                    id: MessageId(20000 * 1048576),
+                    text: text.into(),
+                    date: BASE_DATE + 20000 * 60 - id as i32 * 7200,
+                    outgoing: false,
+                }),
+                unread_count: unread,
+                unread_mentions: if id == 3 { 2 } else { 0 },
+                muted_until: if id == 4 { i64::MAX } else { 0 },
+                show_notification_preview: true,
+                last_read_inbox: MessageId(
+                    match id {
+                        1 => 19980,
+                        3 => 19996,
+                        4 => 19982,
+                        _ => 20000,
+                    } * 1048576,
+                ),
+                last_read_outbox: MessageId(19990 * 1048576),
+            };
+            if let Ok(mut chats) = self.chats.lock() {
+                chats.push(chat.clone());
+            }
+            sink.post(Event::ChatListChanged(ChatListChange::Insert {
+                position,
+                chat,
+            }));
+        }
+        sink.post(Event::ChatsLoaded { has_more: false });
+    }
+    pub fn command(&mut self, command: Command) -> Result<(), tg_core::CommandError> {
+        let Some(sink) = &self.sink else {
+            return Ok(());
+        };
+        match command {
+            Command::DownloadFile(id) => {
+                // A bounded file notification uses the same domain path as updateFile.
+                sink.post(Event::FileUpdated(tg_core::MediaFile {
+                    id,
+                    path: Some(self.media_path.clone()),
+                }));
+            }
+            Command::CancelDownload(_) => {}
+            Command::ViewMessages { chat, messages } => {
+                let valid = !messages.is_empty()
+                    && messages.len() <= 50
+                    && messages.iter().all(|id| id.0 > 0);
+                if valid
+                    && let Ok(mut chats) = self.chats.lock()
+                    && let Some(entry) = chats.iter_mut().find(|c| c.id == chat)
+                    && let Some(last) = messages.iter().max().copied()
+                {
+                    let old = entry.last_read_inbox.0 / 1048576;
+                    let new = last.0 / 1048576;
+                    let incoming = |n: i64| n - n / 3;
+                    let read = incoming(new).saturating_sub(incoming(old)).max(0) as u32;
+                    entry.unread_count = entry.unread_count.saturating_sub(read);
+                    entry.last_read_inbox = entry.last_read_inbox.max(last);
+                    if entry.unread_count == 0 {
+                        entry.unread_mentions = 0;
+                    }
+                    let position = (chat.0 - 1) as usize;
+                    sink.post(Event::ChatListChanged(ChatListChange::Update {
+                        position,
+                        chat: entry.clone(),
+                    }));
+                }
+                sink.post(Event::MessagesViewed {
+                    chat,
+                    success: valid,
+                });
+            }
+            Command::OpenChatAt { chat, anchor } => {
+                let mut event = media_page(chat, anchor, false, self.text_only);
+                if let Event::MessagesLoaded { messages, .. } = &mut event {
+                    let mut newer = media_page(chat, anchor, true, self.text_only);
+                    if let Event::NewerMessagesLoaded { messages: tail, .. } = &mut newer {
+                        messages.extend(tail.drain(..).take(25));
+                    }
+                    messages.sort_by_key(|m| m.id);
+                    while messages.len() > 50 {
+                        messages.remove(0);
+                    }
+                }
+                if let Event::MessagesLoaded { messages, .. } = event {
+                    sink.post(Event::MessagesAroundLoaded {
+                        chat,
+                        anchor,
+                        messages,
+                    });
+                }
+            }
+            Command::OpenChat(chat) => self.page(chat, MessageId(0), false)?,
+            Command::LoadOlderMessages { chat, before } => self.page(chat, before, false)?,
+            Command::LoadNewerMessages { chat, after } => self.page(chat, after, true)?,
+            Command::RequestQrSignIn => {
+                sink.post(Event::AuthStateChanged(AuthState::WaitOtherDevice {
+                    link: "https://example.org/synthetic-sign-in".into(),
+                }))
+            }
+            Command::SubmitPhoneNumber(_) => {
+                sink.post(Event::AuthStateChanged(AuthState::WaitCode))
+            }
+            Command::SubmitCode(_) => sink.post(Event::AuthStateChanged(AuthState::WaitPassword {
+                hint: String::new(),
+            })),
+            Command::SubmitPassword(_) => sink.post(Event::AuthStateChanged(AuthState::Ready)),
+            Command::LoadMoreChats => sink.post(Event::ChatsLoaded { has_more: false }),
+            Command::SendText { chat, text } => {
+                self.sent += 1;
+                sink.post(Event::NewMessage(Message {
+                    photo: None,
+                    id: MessageId(self.sent * 1048576),
+                    chat,
+                    date: BASE_DATE + self.sent as i32 * 60,
+                    outgoing: true,
+                    text,
+                    entities: vec![],
+                    send_state: SendState::Sent,
+                    album: 0,
+                    sender_id: 0,
+                    sender: None,
+                }));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    pub fn schedule_incoming(&self) {
+        let Some(sink) = self.sink.clone() else {
+            return;
+        };
+        let chats = self.chats.clone();
+        // One demo-only arrival, three seconds after startup; no periodic notification timer.
+        let _ = std::thread::Builder::new()
+            .name("tg-demo-incoming".into())
+            .spawn(move || {
+                std::thread::sleep(Duration::from_secs(3));
+                let message = Message {
+                    chat: ChatId(3),
+                    id: MessageId(20001 * 1048576),
+                    date: BASE_DATE + 20001 * 60,
+                    outgoing: false,
+                    text: "A synthetic desktop notification has arrived.".into(),
+                    sender: Some("Anna Petrova".into()),
+                    sender_id: 1000,
+                    album: 0,
+                    photo: None,
+                    entities: vec![],
+                    send_state: SendState::Sent,
+                };
+                if let Ok(mut chats) = chats.lock()
+                    && let Some(chat) = chats.iter_mut().find(|c| c.id == message.chat)
+                {
+                    chat.unread_count = chat.unread_count.saturating_add(1);
+                    chat.last_message = Some(MessagePreview {
+                        id: message.id,
+                        date: message.date,
+                        outgoing: false,
+                        text: message.text.clone(),
+                    });
+                    sink.post(Event::ChatListChanged(ChatListChange::Update {
+                        position: 2,
+                        chat: chat.clone(),
+                    }));
+                }
+                sink.post(Event::IncomingMessage(message));
+            });
+    }
+    fn page(
+        &self,
+        chat: ChatId,
+        cursor: MessageId,
+        newer: bool,
+    ) -> Result<(), tg_core::CommandError> {
+        let error = || tg_core::CommandError {
+            code: -4,
+            message: "Demo page capacity exceeded.".into(),
+        };
+        let Some(sink) = self.sink.clone() else {
+            return Ok(());
+        };
+        let pending = self.pending.clone();
+        if pending
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < 2).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return Err(error());
+        }
+        let release = pending.clone();
+        let text_only = self.text_only;
+        if std::thread::Builder::new()
+            .name("tg-demo-page".into())
+            .spawn(move || {
+                // A single artificial latency delay per request, never a sleeping loop or UI wait.
+                std::thread::sleep(Duration::from_millis(150));
+                let event = media_page(chat, cursor, newer, text_only);
+                release.fetch_sub(1, Ordering::AcqRel);
+                sink.post(event);
+            })
+            .is_err()
+        {
+            pending.fetch_sub(1, Ordering::AcqRel);
+            return Err(error());
+        }
+        Ok(())
+    }
+}
+fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> Event {
+    let mut event = page(chat, before, newer);
+    if !text_only
+        && let Event::MessagesLoaded { messages, .. } | Event::NewerMessagesLoaded { messages, .. } =
+            &mut event
+    {
+        for message in messages {
+            let n = message.id.0 / 1048576;
+            match n % 20 {
+                0 => {
+                    message.text = "Video".into();
+                    message.entities.clear();
+                }
+                // Albums of 2, 3 and 4 photos with the caption on the first item, like Telegram.
+                1..=2 | 5..=7 | 10..=13 => {
+                    let first = match n % 20 {
+                        1..=2 => 1,
+                        5..=7 => 5,
+                        _ => 10,
+                    };
+                    let (width, height) = [(1008, 640), (640, 800), (800, 800)][(n % 3) as usize];
+                    let mut photo = demo_photo((100000 + n) as i32);
+                    photo.width = width;
+                    photo.height = height;
+                    message.photo = Some(photo);
+                    message.album = n - n % 20 + first;
+                    message.text = if n % 20 == first {
+                        format!("#{n}  Album / synthetic photos")
+                    } else {
+                        String::new()
+                    };
+                    message.entities.clear();
+                }
+                15 => {
+                    message.photo = Some(demo_photo((100000 + n) as i32));
+                    message.text = String::new();
+                    message.entities.clear();
+                }
+                16 => {
+                    message.photo = Some(demo_photo((100000 + n) as i32));
+                    message.text = format!("#{n}  Mountain lake / synthetic photo caption");
+                    message.entities.clear();
+                }
+                _ => {}
+            }
+        }
+    }
+    event
+}
+fn demo_photo(id: i32) -> tg_core::Photo {
+    tg_core::Photo {
+        file: tg_core::MediaFile { id, path: None },
+        width: 1008,
+        height: 640,
+        minithumbnail: include_bytes!("../assets/demo-mini.jpg").to_vec(),
+    }
+}
+/// Called by the startup worker. One fixed synthetic JPEG per process, no account data.
+pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!("tg-rust-demo-{}.jpg", std::process::id()));
+    std::fs::write(&path, include_bytes!("../assets/demo-photo.jpg"))?;
+    Ok(path)
+}
+fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
+    let sequence = before.0 / 1048576;
+    let end = if newer {
+        (sequence + 49).min(20000)
+    } else if before.0 == 0 {
+        20000
+    } else {
+        sequence - 1
+    };
+    let start = if newer {
+        sequence + 1
+    } else {
+        (end - 49).max(1)
+    };
+    let messages = (start..=end).rev().map(|id| {
+        let (text,mut entities): (String,Vec<TextEntity>) = match id % 6 {
+            0 => ("Welcome to the demo. These messages are generated locally; no Telegram account is connected.".into(), vec![TextEntity { offset: 0, length: 19, kind: EntityKind::Bold }]),
+            1 => ("\u{041f}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}! \u{041f}\u{0440}\u{043e}\u{0432}\u{0435}\u{0440}\u{044f}\u{0435}\u{043c} \u{043f}\u{0435}\u{0440}\u{0435}\u{043d}\u{043e}\u{0441} \u{0441}\u{0442}\u{0440}\u{043e}\u{043a} \u{0438} emoji \u{1f642} \u{1f525} \u{1f44d}".into(), vec![]),
+            2 => ("\u{05e9}\u{05dc}\u{05d5}\u{05dd} \u{05e2}\u{05d5}\u{05dc}\u{05dd} - \u{0645}\u{0631}\u{062d}\u{0628}\u{0627} \u{0628}\u{0627}\u{0644}\u{0639}\u{0627}\u{0644}\u{0645}".into(), vec![]),
+            3 => ("cargo build --release -p tg-app".into(), vec![TextEntity { offset: 0, length: 30, kind: EntityKind::Code }]),
+            4 => ("Formatting: bold, italic, underline, strike, spoiler".into(), vec![TextEntity { offset: 12, length: 4, kind: EntityKind::Bold }, TextEntity { offset: 18, length: 6, kind: EntityKind::Italic }, TextEntity { offset: 26, length: 9, kind: EntityKind::Underline }, TextEntity { offset: 37, length: 6, kind: EntityKind::Strikethrough }, TextEntity { offset: 45, length: 7, kind: EntityKind::Spoiler }]),
+            _ => ("You can select another chat, load earlier messages, resize the window, and send a local message. Enter sends; Shift+Enter inserts a new line.\nhttps://example.org".into(), vec![TextEntity { offset: 142, length: 19, kind: EntityKind::Url }]),
+        };
+        let prefix=format!("#{id}  ");
+        for entity in &mut entities { entity.offset+=prefix.len() as u32; }
+        let outgoing = id % 3 == 0;
+        let sender_id = if outgoing { 0 } else { 1000 + (id / 4) % 3 };
+        Message { album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
+    }).collect();
+    if newer {
+        Event::NewerMessagesLoaded {
+            chat,
+            after: before,
+            next_after: (start <= end).then_some(MessageId(end * 1048576)),
+            messages,
+        }
+    } else {
+        Event::MessagesLoaded {
+            chat,
+            before,
+            next_before: (start <= end).then_some(MessageId(start * 1048576)),
+            messages,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn synthetic_history_has_twenty_thousand_messages_and_realistic_paged_cursors() {
+        let Event::MessagesLoaded {
+            messages,
+            next_before,
+            ..
+        } = page(ChatId(1), MessageId(0), false)
+        else {
+            panic!("older page");
+        };
+        assert_eq!(messages.len(), 50);
+        assert_eq!(messages[0].id, MessageId(20971520000));
+        assert_eq!(next_before, Some(MessageId(20920139776)));
+        let Event::MessagesLoaded {
+            messages,
+            next_before,
+            ..
+        } = page(ChatId(1), MessageId(20920139776), false)
+        else {
+            panic!("older page");
+        };
+        assert_eq!(messages[0].id, MessageId(20919091200));
+        assert_eq!(messages.len(), 50);
+        assert!(next_before.is_some());
+        let Event::NewerMessagesLoaded {
+            messages,
+            next_after,
+            ..
+        } = page(ChatId(1), MessageId(20920139776), true)
+        else {
+            panic!("newer page");
+        };
+        assert_eq!(messages.len(), 49);
+        assert_eq!(next_after, Some(MessageId(20971520000)));
+        let Event::MessagesLoaded {
+            messages,
+            next_before,
+            ..
+        } = page(ChatId(1), MessageId(1048576), false)
+        else {
+            panic!("empty page");
+        };
+        assert!(messages.is_empty());
+        assert_eq!(next_before, None);
+        let Event::NewerMessagesLoaded {
+            messages,
+            next_after,
+            ..
+        } = page(ChatId(1), MessageId(20971520000), true)
+        else {
+            panic!("empty page");
+        };
+        assert!(messages.is_empty());
+        assert_eq!(next_after, None);
+    }
+}

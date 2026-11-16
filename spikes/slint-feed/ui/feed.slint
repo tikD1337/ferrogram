@@ -1,0 +1,139 @@
+import { ListView } from "std-widgets.slint";
+
+export struct Message {
+    sender: string,
+    // Mode 0: plain text.
+    text: string,
+    // Mode 1: Slint formatted text.
+    styled: styled-text,
+    // Mode 2: text rendered by our code, and its dimensions.
+    rendered: image,
+    text-width: length,
+    text-height: length,
+    time: string,
+    outgoing: bool,
+}
+
+component Bubble inherits Rectangle {
+    in property <Message> msg;
+    in property <int> mode;
+    // True-black theme for OLED screens: pixels that show nothing stay switched off.
+    in property <bool> oled;
+    callback link-clicked(url: string);
+    callback text-pressed(x: length, y: length);
+    callback text-moved(x: length, y: length);
+    callback text-released();
+
+    border-radius: 10px;
+    // On black, bubbles are told apart by a hairline outline rather than by a filled
+    // surface: incoming ones stay black, outgoing ones get a very dark accent tint.
+    background: root.oled ? (msg.outgoing ? #071a2b : #000000) : (msg.outgoing ? #2b5278 : #182533);
+    border-width: root.oled ? 1px : 0px;
+    border-color: msg.outgoing ? #14395c : #242a30;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 2px;
+
+        if !msg.outgoing: Text {
+            text: msg.sender;
+            color: #6ab3f3;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        if root.mode == 0: Text {
+            text: msg.text;
+            wrap: word-wrap;
+            color: #ffffff;
+            font-size: 14px;
+        }
+
+        if root.mode == 1: StyledText {
+            text: msg.styled;
+            default-color: #ffffff;
+            default-font-size: 14px;
+            link-color: #6ab3f3;
+            link-clicked(url) => {
+                root.link-clicked(url);
+            }
+        }
+
+        if root.mode == 2: Image {
+            source: msg.rendered;
+            width: msg.text-width;
+            height: msg.text-height;
+
+            TouchArea {
+                mouse-cursor: text;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        root.text-pressed(self.mouse-x, self.mouse-y);
+                    }
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.text-released();
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        root.text-moved(self.mouse-x, self.mouse-y);
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: msg.time;
+            color: #7f91a4;
+            font-size: 11px;
+            horizontal-alignment: right;
+        }
+    }
+}
+
+export component FeedWindow inherits Window {
+    in property <[Message]> messages;
+    in property <int> mode;
+    in property <bool> oled;
+    in-out property <length> scroll-y <=> list.content-y;
+    out property <length> content-height: list.content-height;
+    out property <length> visible-height: list.visible-height;
+    callback link-clicked(url: string);
+    callback text-pressed(row: int, x: length, y: length);
+    callback text-moved(row: int, x: length, y: length);
+    callback text-released(row: int);
+
+    title: "Slint feed spike";
+    preferred-width: 900px;
+    preferred-height: 700px;
+    background: root.oled ? #000000 : #0e1621;
+
+    list := ListView {
+        for msg[row] in root.messages: HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 3px;
+            padding-bottom: 3px;
+            alignment: msg.outgoing ? end : start;
+
+            Bubble {
+                msg: msg;
+                mode: root.mode;
+                oled: root.oled;
+                max-width: 520px;
+                link-clicked(url) => {
+                    root.link-clicked(url);
+                }
+                text-pressed(x, y) => {
+                    root.text-pressed(row, x, y);
+                }
+                text-moved(x, y) => {
+                    root.text-moved(row, x, y);
+                }
+                text-released => {
+                    root.text-released(row);
+                }
+            }
+        }
+    }
+}

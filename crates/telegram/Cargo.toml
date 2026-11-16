@@ -1,0 +1,17 @@
+[package]
+name = "tg-telegram"
+description = "Telegram engine: TDLib wrapper and the event-processing thread."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+tg-core = { path = "../core" }
+serde_json = "1"
+base64 = "=0.23.1"
+libloading = "0.8"
+
+[lints]
+workspace = true

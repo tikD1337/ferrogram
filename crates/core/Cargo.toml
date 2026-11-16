@@ -1,0 +1,11 @@
+[package]
+name = "tg-core"
+description = "Domain model: commands, events, identifiers. No FFI, no UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

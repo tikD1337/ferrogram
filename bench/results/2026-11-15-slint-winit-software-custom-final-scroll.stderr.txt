@@ -1,0 +1,33 @@
+Slint: Build config: release; Backend: software
+mode: Custom, scale factor: 1
+average frames per second: 240 details from last frame: (dirty: [])
+average frames per second: 239 details from last frame: (dirty: [])
+average frames per second: 242 details from last frame: (dirty: [])
+average frames per second: 239 details from last frame: (dirty: [])
+average frames per second: 244 details from last frame: (dirty: [])
+average frames per second: 241 details from last frame: (dirty: [])
+average frames per second: 241 details from last frame: (dirty: [])
+average frames per second: 242 details from last frame: (dirty: [])
+average frames per second: 239 details from last frame: (dirty: [])
+average frames per second: 240 details from last frame: (dirty: [])
+average frames per second: 237 details from last frame: (dirty: [])
+average frames per second: 237 details from last frame: (dirty: [])
+average frames per second: 239 details from last frame: (dirty: [])
+average frames per second: 239 details from last frame: (dirty: [])
+average frames per second: 238 details from last frame: (dirty: [])
+average frames per second: 232 details from last frame: (dirty: [])
+average frames per second: 238 details from last frame: (dirty: [])
+average frames per second: 241 details from last frame: (dirty: [])
+average frames per second: 238 details from last frame: (dirty: [])
+average frames per second: 238 details from last frame: (dirty: [])
+average frames per second: 240 details from last frame: (dirty: [])
+average frames per second: 241 details from last frame: (dirty: [])
+average frames per second: 246 details from last frame: (dirty: [])
+average frames per second: 238 details from last frame: (dirty: [])
+average frames per second: 242 details from last frame: (dirty: [])
+average frames per second: 239 details from last frame: (dirty: [])
+average frames per second: 245 details from last frame: (dirty: [])
+autoscroll: 3334 steps in 28.0 s
+average frames per second: 233 details from last frame: (dirty: [])
+average frames per second: 0 
+custom text: 891 renders, 891 layouts, 780 glyphs rasterized

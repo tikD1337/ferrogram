@@ -1,0 +1,5 @@
+[toolchain]
+# The version is pinned to make performance measurements reproducible.
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]

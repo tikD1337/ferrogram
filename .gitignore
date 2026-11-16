@@ -1,0 +1,15 @@
+target/
+target-*/
+
+# Telegram data and secrets — never commit
+/tdlib-data/
+*.binlog
+.env
+CLAUDE.local.md
+api_credentials.*
+
+# Profiler traces
+*.etl
+
+# Internal working notes: task briefs and reports for the coding agents
+/internal/

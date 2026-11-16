@@ -1,0 +1,367 @@
+import { ListView } from "std-widgets.slint";
+// Colours follow Telegram Desktop's night theme; OLED mode turns surfaces black.
+export global Theme {
+    in-out property <bool> oled: false;
+    out property <color> window: oled ? #000000 : #0e1621;
+    out property <color> panel: oled ? #000000 : #17212b;
+    out property <color> field: oled ? #000000 : #242f3d;
+    out property <color> incoming: oled ? #101010 : #182533;
+    out property <color> outgoing: oled ? #0b2236 : #2b5278;
+    out property <color> selected: oled ? #0b2236 : #2b5278;
+    out property <color> hover: oled ? #101010 : #202b36;
+    out property <color> date: oled ? #1a1a1acc : #1e2c3acc;
+    out property <color> border: oled ? #1a1a1a : #0b131b;
+    out property <color> text: #ffffff;
+    out property <color> muted: #7f91a4;
+    out property <color> time-in: #6d7f8f;
+    out property <color> time-out: #7da8d3;
+    out property <color> check: #72bcfd;
+    out property <color> badge: #3e88c7;
+    out property <color> accent: #6ab3f3;
+}
+export struct ChatRow { avatar: image, initials: string, color: color, title: string, preview: string, time: string, unread: string, mentions: string, muted: bool, selected: bool }
+export struct PhotoCell { image: image, label: string, x: length, y: length, width: length, height: length }
+// One feed row: a date separator (optional) and one bubble holding a message or an album.
+export struct MessageRow {
+    row-y: length, height: length, date: string, unread: bool, unread-y: length,
+    bubble-y: length, bubble-width: length, bubble-height: length, outgoing: bool, tail: bool,
+    sender: string, sender-color: color,
+    media-y: length, media-width: length, media-height: length, media-caption: bool, cells: [PhotoCell],
+    rendered: image, text-y: length, text-width: length, text-height: length,
+    time: string, time-x: length, time-y: length, time-over-media: bool,
+    // 0 none, 1 sent, 2 read, -1 sending, -2 failed.
+    checks: int,
+}
+component Action inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 40px;
+    min-width: 80px;
+    border-radius: 6px;
+    background: touch.has-hover && root.enabled ? #4a96d6 : Theme.badge;
+    opacity: root.enabled ? 1 : 0.5;
+    Text { text: root.text; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; font-size: 14px; font-weight: 600; }
+    touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+component Link inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 32px;
+    Text { text: root.text; color: touch.has-hover ? #8ccaff : Theme.accent; horizontal-alignment: center; vertical-alignment: center; font-size: 14px; }
+    touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+component Input inherits Rectangle {
+    in-out property <string> text;
+    in property <bool> secret;
+    callback accepted();
+    height: 44px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: entry.has-focus ? Theme.accent : #2f3e4e;
+    background: Theme.field;
+    entry := TextInput {
+        x: 12px; y: 11px; width: parent.width - 24px; height: 22px;
+        text <=> root.text;
+        color: Theme.text;
+        selection-background-color: #2b5278;
+        selection-foreground-color: #ffffff;
+        font-size: 15px;
+        single-line: true;
+        input-type: root.secret ? InputType.password : InputType.text;
+        accepted => { root.accepted(); }
+    }
+}
+component Avatar inherits Rectangle {
+    in property <image> source;
+    in property <string> initials;
+    in property <color> tint;
+    border-radius: self.width / 2;
+    clip: true;
+    background: root.tint;
+    Text { text: root.initials; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; font-size: root.width * 0.36; font-weight: 600; }
+    Image { source: root.source; width: parent.width; height: parent.height; image-fit: cover; }
+}
+export component AppWindow inherits Window {
+    in property <string> window-title: "tg-rust";
+    title: root.window-title;
+    icon: @image-url("icon.png");
+    in property <string> open-unread;
+    preferred-width: 1040px;
+    preferred-height: 740px;
+    min-width: 700px;
+    min-height: 520px;
+    background: Theme.window;
+    default-font-family: "Segoe UI";
+    in property <bool> ready;
+    in property <bool> demo;
+    in property <bool> blocked;
+    in-out property <bool> security-warning;
+    in property <string> error;
+    in property <string> auth-title: "Starting Telegram";
+    // 0 connecting, 1 QR, 2 phone, 3 code, 4 password.
+    in-out property <int> auth-step;
+    in property <image> qr;
+    in property <[ChatRow]> chats;
+    in property <[MessageRow]> messages;
+    in property <image> chat-avatar;
+    in property <string> chat-initials;
+    in property <color> chat-color: #65aadd;
+    in property <string> chat-title: "";
+    in property <bool> chat-open;
+    in property <bool> more-chats: true;
+    in-out property <length> feed-y;
+    in property <length> feed-content-height;
+    in-out property <length> feed-height: 500px;
+    in-out property <length> chat-y;
+    in-out property <length> chat-height: 600px;
+    // Row height matches CHAT_ROW in models.rs.
+    out property <bool> chat-near-end: root.chats.length * 62px + root.chat-y < root.chat-height * 3;
+    in property <bool> at-newest: true;
+    callback viewport-changed();
+    callback chat-viewport-changed();
+    callback media-ready();
+    changed chat-y => { root.chat-viewport-changed(); }
+    changed chat-height => { root.chat-viewport-changed(); }
+    in-out property <string> auth-input;
+    in-out property <string> draft;
+    // Maximum bubble width: the history area minus side margins, at most 504 px.
+    out property <length> feed-width: max(80px, min(504px, root.width - 300px - 48px));
+    changed feed-width => { root.width-changed(); }
+    callback width-changed();
+    callback drain-events();
+    callback auth-submit();
+    callback request-qr();
+    callback open-chat(index: int);
+    callback load-chats();
+    callback send();
+    callback logout();
+    callback demo-toggle();
+    callback latest();
+    in-out property <bool> follow-tail: true;
+    VerticalLayout {
+        padding: 0px; spacing: 0px;
+        if root.demo: Rectangle {
+            height: 40px; background: Theme.panel;
+            HorizontalLayout { padding: 4px; padding-left: 14px; spacing: 10px;
+                Text { min-width: 300px; horizontal-stretch: 1; text: "DEMO / Synthetic data / no account or key files"; color: Theme.accent; font-size: 12px; vertical-alignment: center; }
+                Link { width: 140px; text: root.ready ? "Preview sign-in" : "Back to chats"; clicked => { root.demo-toggle(); } }
+                Link { width: 120px; text: "TPM warning"; clicked => { root.security-warning = !root.security-warning; } }
+            }
+        }
+        if root.security-warning: Rectangle {
+            height: 40px; background: #3a2d1b;
+            Text { x: 16px; width: parent.width - 32px; text: "Security warning: TPM unavailable. The database key is protected by Windows DPAPI only."; color: #edbb76; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
+        }
+        if root.error != "": Rectangle {
+            height: 40px; background: #3b2226;
+            Text { x: 16px; width: parent.width - 32px; text: root.error; color: #ffb4b4; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
+        }
+        if !root.ready: Rectangle {
+            background: Theme.window;
+            VerticalLayout {
+                alignment: center; padding: 50px; spacing: 16px;
+                HorizontalLayout { alignment: center;
+                    Image { width: 112px; height: 112px; source: @image-url("icon.png"); image-fit: contain; }
+                }
+                Text { text: root.auth-step == 2 ? "Sign in to Telegram" : root.auth-title; color: Theme.text; font-size: 22px; font-weight: 600; horizontal-alignment: center; }
+                if root.auth-step == 1: VerticalLayout {
+                    alignment: center; spacing: 14px;
+                    HorizontalLayout { alignment: center;
+                        Rectangle { width: 232px; height: 232px; background: #ffffff; border-radius: 12px; Image { x: 6px; y: 6px; width: 220px; height: 220px; source: root.qr; image-fit: contain; } }
+                    }
+                    Text { text: "Open Telegram on your phone, go to Settings > Devices > Link Desktop Device and scan this code."; color: Theme.muted; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
+                    HorizontalLayout { alignment: center;
+                        Link { width: 220px; text: "Log in by phone number"; enabled: !root.blocked; clicked => { root.auth-input = ""; root.auth-step = 2; } }
+                    }
+                }
+                if root.auth-step >= 2: HorizontalLayout { alignment: center;
+                    VerticalLayout {
+                        width: 340px; spacing: 12px;
+                        Text { text: root.auth-step == 2 ? "Please confirm your country code and enter your phone number." : root.auth-step == 3 ? "Enter the code Telegram sent you." : "Your account is protected with an additional password."; color: Theme.muted; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; }
+                        Input { text <=> root.auth-input; secret: root.auth-step == 4; accepted => { if !root.blocked { root.auth-submit(); } } }
+                        Action { text: "NEXT"; enabled: !root.blocked && root.auth-input != ""; clicked => { root.auth-submit(); } }
+                        Link { text: "Log in by QR code"; enabled: !root.blocked; clicked => { root.auth-input = ""; root.request-qr(); } }
+                    }
+                }
+            }
+        }
+        if root.ready: HorizontalLayout {
+            spacing: 0px; padding: 0px;
+            Rectangle {
+                width: 300px; background: Theme.panel;
+                VerticalLayout {
+                    padding: 0px; spacing: 0px;
+                    Rectangle { height: 54px; background: Theme.panel;
+                        menu-button := Rectangle {
+                            x: 10px; y: 9px; width: 36px; height: 36px; border-radius: 18px;
+                            background: menu-touch.has-hover ? Theme.hover : transparent;
+                            Path { x: 9px; y: 11px; width: 18px; height: 14px; viewbox-width: 18; viewbox-height: 14;
+                                stroke: Theme.muted; stroke-width: 2px; fill: transparent;
+                                commands: "M0 1 L18 1 M0 7 L18 7 M0 13 L18 13"; }
+                            menu-touch := TouchArea { clicked => { menu.show(); } }
+                        }
+                        Text { x: 58px; text: "Chats"; color: Theme.text; font-size: 16px; font-weight: 600; vertical-alignment: center; height: parent.height; }
+                        menu := PopupWindow {
+                            x: 10px; y: 48px; width: 200px; height: 52px;
+                            Rectangle { background: Theme.field; border-radius: 8px; drop-shadow-blur: 12px; drop-shadow-color: #00000080;
+                                Rectangle { x: 0px; y: 6px; width: parent.width; height: 40px;
+                                    background: logout-touch.has-hover ? #2f3e4e : transparent;
+                                    Text { x: 16px; text: "Log out"; color: root.demo ? Theme.muted : Theme.text; font-size: 14px; vertical-alignment: center; height: parent.height; }
+                                    logout-touch := TouchArea { enabled: !root.blocked && !root.demo; clicked => { root.logout(); } }
+                                }
+                            }
+                        }
+                    }
+                    chat-list := ListView {
+                        changed visible-height => { root.chat-height = self.visible-height; }
+                        scrolled => { root.chat-y = self.content-y; if root.chat-near-end && root.more-chats { root.load-chats(); } }
+                        in property <int> chat-count: root.chats.length;
+                        changed chat-count => { if root.chat-near-end && root.more-chats { root.load-chats(); } }
+                        for chat[index] in root.chats: Rectangle {
+                            height: 62px;
+                            background: chat.selected ? Theme.selected : row-touch.has-hover ? Theme.hover : Theme.panel;
+                            Avatar { x: 10px; y: 8px; width: 46px; height: 46px; source: chat.avatar; initials: chat.initials; tint: chat.color; }
+                            Text { x: 68px; y: 9px; width: parent.width - 68px - 62px; height: 20px; text: chat.title; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
+                            Text { x: parent.width - 60px; y: 10px; width: 50px; height: 18px; text: chat.time; color: chat.selected ? #ffffffb0 : Theme.muted; font-size: 12px; horizontal-alignment: right; }
+                            Text { x: 68px; y: 32px; width: parent.width - 68px - (chat.unread != "" || chat.mentions != "" ? 90px : 12px); height: 20px; text: chat.preview; color: chat.selected ? #ffffffd0 : Theme.muted; font-size: 13px; overflow: elide; }
+                            if chat.unread != "" || chat.mentions != "": Rectangle {
+                                height: 20px; width: max(20px, badge-text.preferred-width + 12px);
+                                x: parent.width - self.width - 10px; y: 33px; border-radius: 10px;
+                                background: chat.muted ? #637383 : chat.selected ? #ffffff : Theme.badge;
+                                badge-text := Text { text: chat.mentions != "" ? "@" + chat.mentions + (chat.unread != "" ? " / " + chat.unread : "") : chat.unread; color: chat.selected ? Theme.selected : #ffffff; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            row-touch := TouchArea { enabled: !root.blocked; clicked => { root.open-chat(index); } }
+                        }
+                    }
+                }
+            }
+            Rectangle { width: 1px; background: Theme.border; }
+            Rectangle {
+                background: Theme.window;
+                VerticalLayout {
+                    padding: 0px; spacing: 0px;
+                    if root.chat-open: Rectangle { height: 54px; background: Theme.panel;
+                        Avatar { x: 14px; y: 8px; width: 38px; height: 38px; source: root.chat-avatar; initials: root.chat-initials; tint: root.chat-color; }
+                        Text { x: 64px; width: parent.width - 80px; height: parent.height; text: root.chat-title; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+                    }
+                    feed-area := Rectangle {
+                        clip: true;
+                        changed height => { root.feed-height = self.height; root.viewport-changed(); }
+                        feed := Flickable {
+                            width: parent.width; height: parent.height;
+                            content-width: self.width;
+                            content-height: max(self.height, root.feed-content-height);
+                            content-y <=> root.feed-y;
+                            interactive: !root.blocked;
+                            changed content-y => { root.viewport-changed(); }
+                            for msg in root.messages: Rectangle {
+                                // Rows sit at the bottom when the history is shorter than the view.
+                                y: msg.row-y + max(0px, feed.height - root.feed-content-height);
+                                width: feed.width; height: msg.height;
+                                if msg.date != "": Rectangle {
+                                    y: 10px; height: 24px; width: date-text.preferred-width + 22px;
+                                    x: (parent.width - self.width) / 2; border-radius: 12px; background: Theme.date;
+                                    date-text := Text { text: msg.date; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                if msg.unread: Rectangle { y: msg.unread-y; width: parent.width; height: 30px; background: Theme.panel;
+                                    Text { text: "Unread messages"; color: Theme.accent; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                Rectangle {
+                                    x: msg.outgoing ? parent.width - msg.bubble-width - 14px : 14px;
+                                    y: msg.bubble-y; width: msg.bubble-width; height: msg.bubble-height;
+                                    background: msg.outgoing ? Theme.outgoing : Theme.incoming;
+                                    border-top-left-radius: 12px; border-top-right-radius: 12px;
+                                    border-bottom-left-radius: !msg.outgoing && msg.tail ? 4px : 12px;
+                                    border-bottom-right-radius: msg.outgoing && msg.tail ? 4px : 12px;
+                                    if msg.sender != "": Text {
+                                        x: 10px; y: 6px; width: parent.width - 20px; height: 18px;
+                                        text: msg.sender; color: msg.sender-color; font-size: 13px; font-weight: 600; overflow: elide;
+                                    }
+                                    if msg.media-height > 0px: Rectangle {
+                                        x: 0px; y: msg.media-y; width: msg.media-width; height: msg.media-height; clip: true;
+                                        border-top-left-radius: msg.media-y == 0px ? 12px : 0px;
+                                        border-top-right-radius: msg.media-y == 0px ? 12px : 0px;
+                                        border-bottom-left-radius: msg.media-caption ? 0px : !msg.outgoing && msg.tail ? 4px : 12px;
+                                        border-bottom-right-radius: msg.media-caption ? 0px : msg.outgoing && msg.tail ? 4px : 12px;
+                                        for cell in msg.cells: Rectangle {
+                                            x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: Theme.field;
+                                            Text { text: cell.label; color: Theme.muted; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                                            Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; }
+                                        }
+                                    }
+                                    if msg.text-height > 0px: Image { x: 10px; y: msg.text-y; width: msg.text-width; height: msg.text-height; source: msg.rendered; }
+                                    if msg.time-over-media: Rectangle {
+                                        x: msg.time-x - 6px; y: msg.time-y - 2px; height: 18px; border-radius: 9px; background: #00000070;
+                                        width: (msg.checks != 0 ? 50px : 32px) + 12px;
+                                    }
+                                    Text {
+                                        x: msg.time-x; y: msg.time-y; width: 32px; height: 14px; text: msg.time; font-size: 12px;
+                                        horizontal-alignment: right; vertical-alignment: center;
+                                        color: msg.time-over-media ? #ffffff : msg.outgoing ? Theme.time-out : Theme.time-in;
+                                    }
+                                    if msg.checks > 0: Path {
+                                        x: msg.time-x + 35px; y: msg.time-y + 2px; width: 15px; height: 10px;
+                                        viewbox-width: 15; viewbox-height: 10; fill: transparent; stroke-width: 1.5px;
+                                        stroke: msg.time-over-media ? #ffffff : Theme.check;
+                                        commands: msg.checks == 2 ? "M0.5 5 L4 8.5 L10.5 1.5 M6 7.5 L7 8.5 L14 1.5" : "M2.5 5 L6 8.5 L12.5 1.5";
+                                    }
+                                    if msg.checks == -1: Path {
+                                        x: msg.time-x + 36px; y: msg.time-y + 1px; width: 12px; height: 12px;
+                                        viewbox-width: 12; viewbox-height: 12; fill: transparent; stroke-width: 1.2px;
+                                        stroke: msg.time-over-media ? #ffffff : Theme.time-out;
+                                        commands: "M6 0.8 A5.2 5.2 0 1 0 6.01 0.8 M6 3 L6 6 L8 7.2";
+                                    }
+                                    if msg.checks == -2: Rectangle {
+                                        x: msg.time-x + 36px; y: msg.time-y; width: 14px; height: 14px; border-radius: 7px; background: #e5505a;
+                                        Text { text: "!"; color: #ffffff; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                        if !root.chat-open: Rectangle {
+                            width: empty-text.preferred-width + 28px; height: 28px; border-radius: 14px; background: Theme.date;
+                            empty-text := Text { text: "Select a chat to start messaging"; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        if root.chat-open && (!root.follow-tail || !root.at-newest): Rectangle {
+                            x: parent.width - 62px; y: parent.height - 62px; width: 46px; height: 46px; border-radius: 23px;
+                            background: down-touch.has-hover ? #233040 : Theme.panel;
+                            drop-shadow-blur: 6px; drop-shadow-color: #00000060;
+                            Path { x: 15px; y: 18px; width: 16px; height: 10px; viewbox-width: 16; viewbox-height: 10;
+                                stroke: Theme.muted; stroke-width: 2px; fill: transparent; commands: "M1 1 L8 8 L15 1"; }
+                            if root.open-unread != "": Rectangle { x: -3px; y: -12px; height: 22px; min-width: 26px; width: max(26px, unread-label.preferred-width + 12px); border-radius: 11px; background: Theme.badge;
+                                unread-label := Text { text: root.open-unread; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            down-touch := TouchArea { enabled: !root.blocked; clicked => { root.latest(); } }
+                        }
+                    }
+                    if root.chat-open: Rectangle {
+                        height: max(52px, min(170px, composer.preferred-height + 30px)); background: Theme.panel;
+                        Rectangle { height: 1px; y: 0px; background: Theme.border; }
+                        composer := TextInput {
+                            x: 18px; y: 15px; width: parent.width - 18px - 60px; height: parent.height - 30px;
+                            text <=> root.draft; color: Theme.text; font-size: 14px; wrap: word-wrap;
+                            selection-background-color: #2b5278; selection-foreground-color: #ffffff;
+                            enabled: !root.blocked;
+                            key-pressed(event) => {
+                                if event.text == Key.Return && !event.modifiers.shift { root.send(); return accept; }
+                                return reject;
+                            }
+                        }
+                        if root.draft == "": Text { x: 18px; y: 15px; height: 20px; text: "Write a message..."; color: Theme.muted; font-size: 14px; }
+                        Rectangle {
+                            x: parent.width - 52px; y: parent.height - 46px; width: 40px; height: 40px; border-radius: 20px;
+                            background: send-touch.has-hover && root.draft != "" ? Theme.hover : transparent;
+                            Path { x: 9px; y: 10px; width: 22px; height: 20px; viewbox-width: 24; viewbox-height: 20;
+                                fill: root.draft != "" ? Theme.accent : #4f5f70;
+                                commands: "M1 9 L22 1 L18 19 L12 14 L9 18 L8 12 L18 4 L7 11 Z"; }
+                            send-touch := TouchArea { enabled: !root.blocked && root.draft != ""; clicked => { root.send(); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

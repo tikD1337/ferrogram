@@ -1,0 +1,30 @@
+# Disposable prototype to test the hypothesis that “Slint can handle a message feed”.
+# Not part of the product: outside the main workspace, and its code is not carried over into the product.
+[package]
+name = "slint-feed-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+skia = ["slint/renderer-skia"]
+
+[dependencies]
+slint = "1.18"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The same versions used by Slint itself — no new dependencies are added to the build.
+parley = "0.11"
+swash = "0.2"
+
+[build-dependencies]
+slint-build = "1.18"
+
+# The same settings as the product's release profile, to make measurements comparable.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

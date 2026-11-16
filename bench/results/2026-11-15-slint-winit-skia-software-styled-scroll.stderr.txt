@@ -1,0 +1,31 @@
+Slint: Build config: release; Backend: Skia renderer (skia backend software; surface: 24 bpp)
+average frames per second: 245 
+average frames per second: 238 
+average frames per second: 247 
+average frames per second: 238 
+average frames per second: 242 
+average frames per second: 239 
+average frames per second: 243 
+average frames per second: 239 
+average frames per second: 241 
+average frames per second: 246 
+average frames per second: 239 
+average frames per second: 241 
+average frames per second: 239 
+average frames per second: 239 
+average frames per second: 240 
+average frames per second: 242 
+average frames per second: 242 
+average frames per second: 240 
+average frames per second: 242 
+average frames per second: 248 
+average frames per second: 244 
+average frames per second: 242 
+average frames per second: 243 
+average frames per second: 243 
+average frames per second: 244 
+average frames per second: 243 
+average frames per second: 242 
+autoscroll: 3325 steps in 28.0 s
+average frames per second: 223 
+average frames per second: 0 

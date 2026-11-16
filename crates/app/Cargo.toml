@@ -1,0 +1,21 @@
+[package]
+name = "tg-app"
+description = "Entry point: application lifecycle and wiring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tg-core = { path = "../core" }
+tg-ui = { path = "../ui" }
+tg-telegram = { path = "../telegram" }
+tg-security = { path = "../security" }
+tg-platform = { path = "../platform" }
+
+[build-dependencies]
+embed-resource = "=3.0.12"
