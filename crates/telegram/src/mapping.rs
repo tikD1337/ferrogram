@@ -662,6 +662,8 @@ fn video(content: &Value) -> Result<(Option<Photo>, Option<Video>), CommandError
         Some(Video {
             file: media_file(&value["video"])?,
             duration,
+            width,
+            height,
         }),
     ))
 }

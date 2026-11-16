@@ -14,12 +14,18 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 use windows::core::{BSTR, Interface, implement};
-use windows_sys::Win32::Foundation::{GetLastError, HWND};
-use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    BLACK_BRUSH, GetMonitorInfoW, GetStockObject, HBRUSH, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromWindow,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_TOP, RegisterClassW, SWP_NOACTIVATE,
-    SetWindowPos, WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS, WS_DISABLED, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HWND_TOP,
+    LWA_ALPHA, RegisterClassW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetLayeredWindowAttributes,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_NCDESTROY, WM_RBUTTONUP,
+    WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS, WS_DISABLED, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::Error;
@@ -128,6 +134,7 @@ impl Engine {
             playing: !paused && !ended,
             ended,
             failed: event == ERROR_EVENT,
+            dismissed: false,
         }
     }
 
@@ -323,6 +330,148 @@ impl ChildWindow {
 impl Drop for ChildWindow {
     fn drop(&mut self) {
         // SAFETY: destroyed once, on the UI thread that created it, after the engine stopped.
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
+/// Shared state-report callback; the backdrop calls it on the UI thread when it is clicked.
+pub(crate) type Report = std::sync::Arc<dyn Fn(tg_core::VideoState) + Send + Sync>;
+
+/// Fullscreen dimmed backdrop behind the viewer, as in Telegram Desktop. A click on it asks the
+/// UI to close the viewer. It never takes the focus away from the viewer.
+pub(crate) struct Backdrop(HWND);
+
+unsafe extern "system" fn backdrop_procedure(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_LBUTTONUP || message == WM_RBUTTONUP {
+        // SAFETY: the pointer was stored at creation and stays valid until WM_NCDESTROY.
+        let report = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const Report;
+        if !report.is_null() {
+            // SAFETY: see above; the closure only posts an event to the UI queue.
+            unsafe {
+                (*report)(tg_core::VideoState {
+                    dismissed: true,
+                    ..Default::default()
+                })
+            };
+        }
+        return 0;
+    }
+    if message == WM_NCDESTROY {
+        // SAFETY: takes back the box leaked in Backdrop::show exactly once.
+        let report = unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, 0) } as *mut Report;
+        if !report.is_null() {
+            // SAFETY: allocated by Box::into_raw in Backdrop::show and not freed elsewhere.
+            drop(unsafe { Box::from_raw(report) });
+        }
+    }
+    // SAFETY: default processing for all other messages of this window.
+    unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
+impl Backdrop {
+    /// Dims the monitor of `viewer`, then centres the viewer on it with the video's aspect ratio.
+    pub(crate) fn show(
+        viewer: isize,
+        width: u32,
+        height: u32,
+        bar: i32,
+        report: Report,
+    ) -> Result<Self, Error> {
+        let viewer = viewer as HWND;
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `viewer` is the live viewer window of this thread; `info` is a valid buffer.
+        let ok = unsafe {
+            GetMonitorInfoW(
+                MonitorFromWindow(viewer, MONITOR_DEFAULTTONEAREST),
+                &mut info,
+            )
+        };
+        if ok == 0 {
+            return Err(Error("monitor", 0));
+        }
+        let screen = info.rcMonitor;
+        let class: Vec<u16> = "FerrogramBackdrop\0".encode_utf16().collect();
+        // SAFETY: the module handle of this process.
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let description = WNDCLASSW {
+            lpfnWndProc: Some(backdrop_procedure),
+            hInstance: instance,
+            // SAFETY: stock objects are owned by the system and never freed.
+            hbrBackground: unsafe { GetStockObject(BLACK_BRUSH) } as HBRUSH,
+            lpszClassName: class.as_ptr(),
+            ..Default::default()
+        };
+        // SAFETY: as for the video class; a repeated registration fails harmlessly.
+        unsafe { RegisterClassW(&description) };
+        // SAFETY: top-level popup covering the monitor; no parent, the class is registered.
+        let window = unsafe {
+            CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP,
+                screen.left,
+                screen.top,
+                screen.right - screen.left,
+                screen.bottom - screen.top,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            )
+        };
+        if window.is_null() {
+            // SAFETY: reads this thread's last error right after the failed call.
+            return Err(Error("backdrop window", unsafe { GetLastError() }));
+        }
+        let report = Box::into_raw(Box::new(report));
+        // SAFETY: the window is ours; ownership of the box passes to the window until WM_NCDESTROY.
+        unsafe {
+            SetWindowLongPtrW(window, GWLP_USERDATA, report as isize);
+            // About 70 % black, like Telegram Desktop's media viewer.
+            SetLayeredWindowAttributes(window, 0, 178, LWA_ALPHA);
+            ShowWindow(window, SW_SHOWNOACTIVATE);
+        }
+        let backdrop = Self(window);
+        // Fit the video into 90 % of the monitor, keeping room for the control bar.
+        let (screen_width, screen_height) =
+            (screen.right - screen.left, screen.bottom - screen.top);
+        let (video_width, video_height) = if width == 0 || height == 0 {
+            (16.0, 9.0)
+        } else {
+            (width as f32, height as f32)
+        };
+        let scale = (screen_width as f32 * 0.9 / video_width)
+            .min((screen_height as f32 * 0.9 - bar as f32).max(1.0) / video_height);
+        let window_width = ((video_width * scale) as i32).max(480).min(screen_width);
+        let window_height = ((video_height * scale) as i32 + bar).min(screen_height);
+        // SAFETY: moves the live viewer above the backdrop, centred on the same monitor.
+        unsafe {
+            SetWindowPos(
+                viewer,
+                HWND_TOP,
+                screen.left + (screen_width - window_width) / 2,
+                screen.top + (screen_height - window_height) / 2,
+                window_width,
+                window_height,
+                0,
+            );
+        }
+        Ok(backdrop)
+    }
+}
+
+impl Drop for Backdrop {
+    fn drop(&mut self) {
+        // SAFETY: destroyed once on the UI thread that created it; WM_NCDESTROY frees the box.
         unsafe { DestroyWindow(self.0) };
     }
 }

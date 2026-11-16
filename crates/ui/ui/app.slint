@@ -505,10 +505,12 @@ export component MediaViewer inherits Window {
     title: "Ferrogram - Media viewer";
     icon: @image-url("icon.png");
     background: #000000;
+    // Borderless and centred over a dimmed backdrop by the player, as in Telegram Desktop.
+    no-frame: true;
     preferred-width: 960px;
     preferred-height: 600px;
-    min-width: 480px;
-    min-height: 320px;
+    min-width: 240px;
+    min-height: 160px;
     default-font-family: "Segoe UI";
     in property <bool> loading;
     in property <bool> playing;

@@ -423,6 +423,8 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                             path: None,
                         },
                         duration: 4,
+                        width: 426,
+                        height: 240,
                     });
                     message.text = String::new();
                     message.entities.clear();

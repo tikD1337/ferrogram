@@ -121,6 +121,18 @@ impl State {
             window.set_error("Could not open the media viewer.".into());
             return;
         }
+        if let Some(viewer) = native_window(self.viewer.window()) {
+            let bar = (self.viewer.get_bar() * self.viewer.window().scale_factor()).round() as i32;
+            self.video(
+                window,
+                VideoRequest::Present {
+                    viewer,
+                    width: u32::from(video.width),
+                    height: u32::from(video.height),
+                    bar,
+                },
+            );
+        }
         *self.playing.borrow_mut() = Some((video.file.id, video.file.path.clone()));
         if let Some(path) = video.file.path {
             self.start_video(window, path);
@@ -616,6 +628,7 @@ impl State {
                     self.start_video(window, path);
                 }
             }
+            Event::VideoState(state) if state.dismissed => self.close_video(window),
             Event::VideoState(state) => {
                 if self.viewer.window().is_visible() {
                     let duration = state.duration_ms.max(1);

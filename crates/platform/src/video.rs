@@ -4,12 +4,14 @@ use std::{cell::RefCell, sync::mpsc, time::Duration};
 use tg_core::{VideoRequest, VideoState};
 
 use crate::Error;
-use crate::video_ffi::{ChildWindow, Message, run};
+use crate::video_ffi::{Backdrop, ChildWindow, Message, Report, run};
 
 /// Owned by the UI thread: requests arrive from UI callbacks, which also own the child window.
 pub struct Player {
     sender: mpsc::SyncSender<Message>,
     window: RefCell<Option<ChildWindow>>,
+    backdrop: RefCell<Option<Backdrop>>,
+    report: Report,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -21,19 +23,30 @@ impl std::fmt::Debug for Player {
 
 impl Player {
     /// `report` runs on the player thread for every state change.
-    pub fn start(report: impl Fn(VideoState) + Send + 'static) -> Result<Self, Error> {
+    pub fn start(report: impl Fn(VideoState) + Send + Sync + 'static) -> Result<Self, Error> {
+        let report: Report = std::sync::Arc::new(report);
+        let worker = report.clone();
         // At most 64 queued requests and engine events; time updates beyond that are dropped.
         let (sender, receiver) = mpsc::sync_channel(64);
         let (ready, result) = mpsc::sync_channel(1);
         let events = sender.clone();
         let thread = std::thread::Builder::new()
             .name("tg-video".into())
-            .spawn(move || run(receiver, events, Box::new(report), ready))
+            .spawn(move || {
+                run(
+                    receiver,
+                    events,
+                    Box::new(move |state| worker(state)),
+                    ready,
+                )
+            })
             .map_err(|_| Error("video worker startup", 0))?;
         match result.recv() {
             Ok(Ok(())) => Ok(Self {
                 sender,
                 window: RefCell::new(None),
+                backdrop: RefCell::new(None),
+                report,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
@@ -76,10 +89,22 @@ impl Player {
                     height: rect.height,
                 })
             }
+            VideoRequest::Present {
+                viewer,
+                width,
+                height,
+                bar,
+            } => {
+                *self.backdrop.borrow_mut() = None;
+                let backdrop = Backdrop::show(viewer, width, height, bar, self.report.clone())?;
+                *self.backdrop.borrow_mut() = Some(backdrop);
+                Ok(())
+            }
             VideoRequest::TogglePause => queued(Message::TogglePause),
             VideoRequest::Seek(fraction) => queued(Message::Seek(fraction)),
             VideoRequest::Close => {
                 self.close();
+                *self.backdrop.borrow_mut() = None;
                 Ok(())
             }
         }

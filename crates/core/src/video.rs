@@ -8,6 +8,9 @@ pub struct Video {
     pub file: crate::MediaFile,
     /// Seconds, as reported by Telegram.
     pub duration: u32,
+    /// Frame size in pixels as reported by Telegram; zero when unknown.
+    pub width: u16,
+    pub height: u16,
 }
 
 /// Area of the main window in physical pixels where the video is shown.
@@ -21,6 +24,14 @@ pub struct VideoRect {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VideoRequest {
+    /// Shows the viewer window as Telegram does: centred on its monitor, sized to the video's
+    /// aspect ratio plus the control bar (`bar`, physical pixels), over a dimmed backdrop.
+    Present {
+        viewer: isize,
+        width: u32,
+        height: u32,
+        bar: i32,
+    },
     /// `window` is the native handle of the main window (an `HWND` on Windows).
     Open {
         path: PathBuf,
@@ -42,4 +53,6 @@ pub struct VideoState {
     pub playing: bool,
     pub ended: bool,
     pub failed: bool,
+    /// The user clicked the dimmed backdrop: the viewer should close.
+    pub dismissed: bool,
 }
