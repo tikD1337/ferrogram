@@ -189,7 +189,7 @@ impl Media {
             }
             let cached = self.cache.get(&key);
             let complete = cached.as_ref().is_some_and(|v| v.1);
-            let requested = photo.file.path.is_none() && !complete;
+            let requested = photo.file.id > 0 && photo.file.path.is_none() && !complete;
             if requested
                 && !self
                     .demand
@@ -304,6 +304,32 @@ fn decode(job: &Job) -> Result<SharedPixelBuffer<Rgba8Pixel>, ()> {
             bytes
         }
     };
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        use image::ImageDecoder;
+        let decoder =
+            image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| ())?;
+        let (width, height) = decoder.dimensions();
+        if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 4 * 1024 * 1024 {
+            return Err(());
+        }
+        // At most 16 MiB source pixels per worker; no original pixels escape to the UI/cache.
+        let decoded = image::DynamicImage::from_decoder(decoder).map_err(|_| ())?;
+        if job.cancelled.load(Ordering::Acquire) {
+            return Err(());
+        }
+        let scaled = decoded
+            .resize_exact(
+                job.key.width,
+                job.key.height,
+                image::imageops::FilterType::Triangle,
+            )
+            .into_rgba8();
+        return Ok(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+            scaled.as_raw(),
+            job.key.width,
+            job.key.height,
+        ));
+    }
     let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_max_decoding_buffer_size(16 * 1024 * 1024);
     decoder.read_info().map_err(|_| ())?;
@@ -389,11 +415,42 @@ mod tests {
     }
     fn photo(id: i32) -> Photo {
         Photo {
-            file: MediaFile { id, path: None },
+            file: MediaFile {
+                size: 0,
+                downloaded: 0,
+                downloading: false,
+                id,
+                path: None,
+            },
             width: 1008,
             height: 640,
             minithumbnail: include_bytes!("../../app/assets/demo-mini.jpg").to_vec(),
         }
+    }
+    #[test]
+    fn webp_sticker_preserves_alpha_and_decodes_only_to_display_buffer() {
+        let job = Job {
+            key: Key {
+                id: 7,
+                width: 90,
+                height: 90,
+            },
+            source: Source::Mini(include_bytes!("../../app/assets/demo-sticker.webp").to_vec()),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            preview: false,
+        };
+        let pixels = decode(&job).unwrap();
+        assert_eq!(pixels.as_bytes().len(), 90 * 90 * 4);
+        assert_eq!(pixels.as_slice()[0].a, 0);
+        assert!(pixels.as_slice().iter().any(|p| p.a == 255));
+    }
+    #[test]
+    fn document_minithumbnail_never_prefetches_the_document() {
+        let (mut media, rx) = media();
+        let p = photo(-42);
+        let key = Key::new(&p, 48.0, 48.0, 1.0);
+        assert!(media.sync(vec![(key, p)]).is_empty());
+        assert!(rx.try_recv().unwrap().preview);
     }
     #[test]
     fn demand_deduplicates_downloads_and_cancels_only_after_last_consumer() {
@@ -429,6 +486,9 @@ mod tests {
     fn offscreen_file_updates_do_not_enqueue_decodes() {
         let (mut media, rx) = media();
         media.file(MediaFile {
+            size: 0,
+            downloaded: 0,
+            downloading: false,
             id: 99,
             path: Some("synthetic.jpg".into()),
         });

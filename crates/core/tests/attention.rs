@@ -68,10 +68,12 @@ fn chat() -> tg_core::Chat {
 }
 fn message() -> tg_core::Message {
     tg_core::Message {
+        attachment: None,
         reply: None,
         forwarded: None,
         edited: false,
         is_text: true,
+        service: false,
         permissions: None,
         video: None,
         id: MessageId(2097152),

@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&directory)?;
     let mut engine = text::TextEngine::new(None);
     let fixtures = [
+        ("single-emoji", "\u{1f642}", vec![]),
         (
             "styled",
             "Bold, italic, underline, strike. cargo build\nA hidden spoiler and a link.",
@@ -59,10 +60,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         let message = Message {
+            attachment: None,
             reply: None,
             forwarded: None,
             edited: false,
             is_text: true,
+            service: false,
             permissions: None,
             video: None,
             id: MessageId(1048576),
@@ -78,7 +81,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_state: SendState::Sent,
         };
         for (suffix, scale, width) in [("1x", 1.0, 300.0), ("2x", 2.0, 600.0)] {
-            let rendered = engine.render(&message, scale, width);
+            let rendered = if name == "single-emoji" {
+                engine.render_emoji(&message, scale, 128.0 * scale)
+            } else {
+                engine.render(&message, scale, width)
+            };
             metrics.push_str(&format!(
                 "{name}-{suffix}: {}x{}, last_line={}, clipped={}\n",
                 rendered.width, rendered.height, rendered.last_line, rendered.clipped

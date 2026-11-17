@@ -1,5 +1,6 @@
 // The sole Slint boundary. tg-app sees domain commands/events and plain options only.
 mod actions;
+mod attachments;
 mod bridge;
 mod clock;
 mod history;
@@ -42,12 +43,16 @@ pub struct Options {
     pub demo_scroll: Option<u32>,
     /// Demo only: open the newest synthetic video after startup and exit after this many seconds.
     pub demo_video: Option<u32>,
+    pub demo_voice: Option<u32>,
+    pub demo_round: Option<u32>,
+    pub demo_stickers: bool,
     /// Loaded off-thread by tg-app. At most 32 MiB, never bundled.
     pub emoji_font: Option<Vec<u8>>,
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
 type VideoFn = Box<dyn Fn(VideoRequest) -> Result<(), CommandError>>;
 struct State {
+    attachments: attachments::Attachments,
     actions: actions::Actions,
     media: Rc<RefCell<media::Media>>,
     chats: Rc<Chats>,
@@ -68,6 +73,7 @@ struct State {
     total_unread: Cell<Option<u32>>,
     // Seek the actual oldest edge for an entirely unread chat (TDLib has no oldest sentinel).
     seek_start: Cell<bool>,
+    demo_stickers: Cell<bool>,
 }
 impl State {
     /// Physical-pixel area of the media viewer above its control bar.
@@ -82,7 +88,14 @@ impl State {
         }
     }
     fn video(&self, window: &AppWindow, request: VideoRequest) {
+        let inline = matches!(
+            &request,
+            VideoRequest::OpenRound { .. } | VideoRequest::RoundViewport(_) | VideoRequest::Move(_)
+        );
         if let Err(error) = (self.video.borrow())(request) {
+            if inline {
+                self.stop_voice(window);
+            }
             self.viewer.set_loading(false);
             self.viewer.set_failed(true);
             window.set_error(error.message.into());
@@ -110,6 +123,7 @@ impl State {
         }
     }
     fn play(&self, window: &AppWindow, video: tg_core::Video) {
+        self.stop_voice(window);
         self.close_video(window);
         self.viewer.set_failed(false);
         self.viewer.set_playing(false);
@@ -238,6 +252,7 @@ impl State {
         self.refreshing.set(false);
         self.prefetch(window, top, height, total);
         self.sync_media(window);
+        self.sync_round(window);
         self.view_visible(window);
         self.query_properties(window);
     }
@@ -437,6 +452,7 @@ impl State {
         if !self.send(window, command) {
             return;
         }
+        self.stop_voice(window);
         self.cancel_action(window);
         self.feed.jump_target.set(None);
         self.feed.highlight.set(None);
@@ -553,10 +569,12 @@ impl State {
                     self.sync_media(window);
                 }
                 match auth {
+                    // Phone entry first. A QR request moves TDLib to the other-device state, where
+                    // it rejects phone numbers (AuthManager::set_phone_number) until a logOut, so
+                    // the QR code is only requested when the user asks for it.
                     AuthState::WaitPhoneNumber => {
-                        window.set_auth_step(1);
-                        window.set_auth_title("Scan to sign in".into());
-                        self.send(window, Command::RequestQrSignIn);
+                        window.set_auth_step(2);
+                        window.set_auth_title("Sign in to Telegram".into());
                     }
                     AuthState::WaitOtherDevice { link } => {
                         window.set_auth_step(1);
@@ -587,6 +605,7 @@ impl State {
                         }
                     }
                     AuthState::LoggingOut | AuthState::Closed => {
+                        self.stop_voice(window);
                         self.cancel_action(window);
                         *self.reads.borrow_mut() = ReadBatches::default();
                         self.total_unread.set(None);
@@ -615,6 +634,7 @@ impl State {
                 }
             }
             Event::FileUpdated(file) => {
+                self.attachment_file(window,&file);
                 let ready = match self.playing.borrow_mut().as_mut() {
                     Some((id, path)) if *id == file.id && path.is_none() && file.path.is_some() => {
                         path.clone_from(&file.path);
@@ -629,6 +649,10 @@ impl State {
                     self.start_video(window, path);
                 }
             }
+            Event::MessageContentOpened {chat,message}=>self.content_opened(window,chat,message),
+            Event::FileDownloadFailed(id)=>self.download_failed(window,id),
+            Event::FileOperationFailed=>window.set_error("Could not open or locate the file. Internet-zone marking is required before opening.".into()),
+            Event::VideoState(state) if state.audio_token.is_some()=>self.voice_state(window,state),
             Event::VideoState(state) if state.dismissed => self.close_video(window),
             Event::VideoState(state) => {
                 if self.viewer.window().is_visible() {
@@ -651,6 +675,9 @@ impl State {
                 self.chats.apply(change);
                 self.actions.destinations.notify.reset();
                 self.unread_title(window);
+                if self.demo_stickers.get() && self.chats.rows.borrow().iter().any(|c|c.id.0==5) {
+                    self.demo_stickers.set(false);self.open(window,4);
+                }
                 if window.get_demo() && self.chats.selected.get().is_none() {
                     self.open(window, 0);
                 }
@@ -804,6 +831,8 @@ pub struct Ui {
     snapshot: Option<PathBuf>,
     demo_scroll: Option<u32>,
     demo_video: Option<u32>,
+    demo_voice: Option<u32>,
+    demo_round: Option<u32>,
     state: Rc<State>,
 }
 impl std::fmt::Debug for Ui {
@@ -834,6 +863,7 @@ impl Ui {
         *chats.media.borrow_mut() = Some(media.clone());
         *feed.media.borrow_mut() = Some(media.clone());
         let state = Rc::new(State {
+            attachments: Default::default(),
             actions: actions::Actions::new(chats.clone()),
             media,
             chats,
@@ -856,8 +886,10 @@ impl Ui {
             scroll_timer: slint::Timer::default(),
             total_unread: Cell::new(None),
             seek_start: Cell::new(false),
+            demo_stickers: Cell::new(options.demo_stickers),
         });
         actions::bind(&window, &state);
+        attachments::bind(&window, &state);
         let weak = window.as_weak();
         let s = state.clone();
         window.on_media_ready(move || {
@@ -1087,6 +1119,8 @@ impl Ui {
             snapshot: options.snapshot,
             demo_scroll: options.demo_scroll,
             demo_video: options.demo_video,
+            demo_voice: options.demo_voice,
+            demo_round: options.demo_round,
             state,
         })
     }
@@ -1097,6 +1131,12 @@ impl Ui {
         *self.state.notifications.borrow_mut() = Box::new(handler);
     }
     /// Video requests run on the UI thread, which owns the main window.
+    pub fn on_file(
+        &self,
+        handler: impl Fn(tg_core::FileRequest) -> Result<(), CommandError> + 'static,
+    ) {
+        *self.state.attachments.files.borrow_mut() = Some(Box::new(handler));
+    }
     pub fn on_video(&self, handler: impl Fn(VideoRequest) -> Result<(), CommandError> + 'static) {
         *self.state.video.borrow_mut() = Box::new(handler);
     }
@@ -1131,6 +1171,58 @@ impl Ui {
                 },
             );
         }
+        if let Some(seconds) = self.demo_round {
+            let weak = self.window.as_weak();
+            let state = self.state.clone();
+            slint::Timer::single_shot(Duration::from_millis(1500), move || {
+                let round = state
+                    .feed
+                    .history
+                    .borrow()
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.attachment, Some(tg_core::Attachment::Round(_))))
+                    .cloned();
+                if let Some(w) = weak.upgrade()
+                    && let Some(round) = round
+                {
+                    w.set_follow_tail(false);
+                    state.feed.jump_target.set(Some(round.id));
+                    state.refresh(&w);
+                    state.demo_play_voice(&w, &round);
+                }
+            });
+            slint::Timer::single_shot(Duration::from_secs(u64::from(seconds)), || {
+                let _ = slint::quit_event_loop();
+            });
+        }
+        if let Some(seconds) = self.demo_voice {
+            let weak = self.window.as_weak();
+            let state = self.state.clone();
+            slint::Timer::single_shot(Duration::from_millis(1500), move || {
+                let visible = state.feed.visible_ids();
+                let voice = state
+                    .feed
+                    .history
+                    .borrow()
+                    .messages
+                    .iter()
+                    .find(|m| {
+                        visible.contains(&m.id)
+                            && matches!(m.attachment, Some(tg_core::Attachment::Voice(_)))
+                    })
+                    .cloned();
+                if let Some(w) = weak.upgrade()
+                    && let Some(voice) = voice
+                {
+                    state.demo_play_voice(&w, &voice);
+                }
+            });
+            slint::Timer::single_shot(Duration::from_secs(u64::from(seconds)), || {
+                let _ = slint::quit_event_loop();
+            });
+        }
         if let Some(seconds) = self.demo_video {
             let weak = self.window.as_weak();
             let state = self.state.clone();
@@ -1151,7 +1243,12 @@ impl Ui {
             let result = result.clone();
             // Single-shot render settling delay, not polling. File encoding/writing runs off-thread.
             slint::Timer::single_shot(
-                Duration::from_secs(u64::from(self.demo_scroll.unwrap_or(2))),
+                Duration::from_secs(u64::from(
+                    self.demo_voice
+                        .or(self.demo_round)
+                        .map(|s| s.saturating_sub(1).clamp(2, 5))
+                        .unwrap_or(self.demo_scroll.unwrap_or(2)),
+                )),
                 move || {
                     let saved = weak
                         .upgrade()

@@ -38,6 +38,20 @@ pub enum VideoRequest {
         window: isize,
         rect: VideoRect,
     },
+    /// Audio-only Media Engine; no native window or pixel buffer is created.
+    OpenAudio {
+        path: PathBuf,
+        token: u64,
+    },
+    /// Inline round video; the region is the ellipse intersected with the feed viewport.
+    OpenRound {
+        path: PathBuf,
+        window: isize,
+        rect: VideoRect,
+        viewport: VideoRect,
+        token: u64,
+    },
+    RoundViewport(VideoRect),
     Move(VideoRect),
     TogglePause,
     /// Fraction of the duration, clamped to 0..=1.
@@ -48,6 +62,8 @@ pub enum VideoRequest {
 /// Reported on player events only (time updates come from the player, no polling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VideoState {
+    /// Correlates voice/round callbacks; late states cannot update another message/video.
+    pub audio_token: Option<u64>,
     pub position_ms: u32,
     pub duration_ms: u32,
     pub playing: bool,

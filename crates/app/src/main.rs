@@ -1,6 +1,9 @@
 //! Lifecycle wiring. Slint stays in tg-ui; TDLib and JSON stay in tg-telegram.
+// Release builds are GUI applications: no console window opens next to the client.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod config;
 mod demo;
+mod files;
 mod options;
 use std::{
     cell::RefCell,
@@ -11,11 +14,17 @@ use tg_core::{CommandError, CommandKind, Event, SecurityWarning};
 use tg_telegram::{Engine, EngineParameters};
 use tg_ui::{EventSink, Ui};
 fn main() -> std::process::ExitCode {
+    // Started from a terminal: print there. Started from Explorer: errors go to a message box.
+    let console = tg_platform::attach_parent_console();
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         // Errors produced here are fixed application text, never credential/native payloads.
         Err(error) => {
-            eprintln!("{error}");
+            if console {
+                eprintln!("{error}");
+            } else {
+                tg_platform::show_error(&error.to_string());
+            }
             std::process::ExitCode::FAILURE
         }
     }
@@ -24,7 +33,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = options::Options::parse(std::env::args().skip(1))?;
     if options.help {
         println!(
-            "tg-app [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>]\n--demo runs synthetic conversations without TDLib, credentials or key files."
+            "ferrogram [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-round <seconds>] [--demo-stickers]\n--demo runs synthetic conversations without TDLib, credentials or key files."
         );
         return Ok(());
     }
@@ -49,6 +58,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 emoji_font: font,
                 demo_scroll: options.demo_scroll,
                 demo_video: options.demo_video,
+                demo_voice: options.demo_voice,
+                demo_round: options.demo_round,
+                demo_stickers: options.demo_stickers,
             },
             move |command| commands.borrow_mut().command(command),
         )?;
@@ -56,15 +68,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         backend.borrow_mut().seed();
         let notifications = attach_notifications(&ui);
         let player = attach_video(&ui);
+        let _files = files::attach(&ui);
         backend.borrow().schedule_incoming();
         let result = ui.run();
         drop(player);
         drop(notifications);
-        let _ = std::thread::spawn(move || {
-            let _ = std::fs::remove_file(media_path.with_extension("mp4"));
-            std::fs::remove_file(media_path)
-        })
-        .join();
+        let _ = std::thread::spawn(move || demo::cleanup_media(&media_path)).join();
         return result;
     }
     // Pre-window configuration reads are also off the UI thread. No keys or native engine yet.
@@ -88,6 +97,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             emoji_font: font,
             demo_scroll: None,
             demo_video: None,
+            demo_voice: None,
+            demo_round: None,
+            demo_stickers: false,
         },
         move |command| {
             let slot = dispatch
@@ -100,6 +112,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let notifications = attach_notifications(&ui);
     let player = attach_video(&ui);
+    let _files = files::attach(&ui);
     let sink = ui.event_sink();
     // Authorization can arrive before Engine::start returns. Hold delivery until
     // the handle is installed, otherwise the UI's default QR request can race it.

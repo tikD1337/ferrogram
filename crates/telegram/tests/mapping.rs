@@ -302,12 +302,12 @@ fn newer_page_filters_anchor_and_uses_maximum_raw_id_for_cursor() {
 fn unsupported_content_is_a_visible_row() {
     let events = decode(
         &mut Decoder::default(),
-        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageSticker"}}}"#,
+        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageAnimation"}}}"#,
     );
     let (Event::NewMessage(message) | Event::IncomingMessage(message)) = &events[0] else {
         panic!("placeholder row")
     };
-    assert_eq!(message.text, "Sticker");
+    assert_eq!(message.text, "Animation");
 }
 
 #[test]
@@ -569,6 +569,39 @@ fn replied_message_resolves_names_without_a_retained_engine_history() {
 }
 
 #[test]
+fn replies_to_captionless_attachments_keep_a_description() {
+    use serde_json::json;
+    let file = json!({"id":42,"size":4096,"local":{"is_downloading_completed":false}});
+    let cases = [
+        (
+            json!({"@type":"messageDocument","caption":{"text":"","entities":[]},
+                "document":{"file_name":"report.pdf","mime_type":"application/pdf","document":file}}),
+            "report.pdf",
+        ),
+        (
+            json!({"@type":"messageVoiceNote","caption":{"text":"","entities":[]},"is_listened":true,
+                "voice_note":{"duration":3,"waveform":"","mime_type":"audio/ogg","voice":file}}),
+            "Voice message",
+        ),
+        (
+            json!({"@type":"messageDocument","caption":{"text":"Quarterly\nnumbers","entities":[]},
+                "document":{"file_name":"report.pdf","mime_type":"application/pdf","document":file}}),
+            "Quarterly numbers",
+        ),
+    ];
+    for (content, expected) in cases {
+        let value = json!({"@type":"message","id":20968374272_i64,"chat_id":7,"date":10,
+            "is_outgoing":true,"content":content,
+            "@extra":{"command":"replied","chat":7,"message":20971520000_i64}});
+        let events = decode(&mut Decoder::default(), &value.to_string());
+        assert!(
+            matches!(&events[0], Event::ReplyResolved {reply:Some(r),..} if r.preview == expected),
+            "{expected}: {events:?}"
+        );
+    }
+}
+
+#[test]
 fn media_without_caption_previews_its_label_not_an_empty_line() {
     let events = decode(
         &mut Decoder::default(),
@@ -581,4 +614,154 @@ fn media_without_caption_previews_its_label_not_an_empty_line() {
         chat.last_message.as_ref().map(|m| m.text.as_str()),
         Some("Photo")
     );
+}
+#[test]
+fn voice_documents_stickers_and_file_progress_use_bounded_domain_metadata() {
+    use base64::Engine as _;
+    use serde_json::json;
+    use tg_core::Attachment;
+    let file = json!({"id":42,"size":4096,"local":{"is_downloading_completed":false,"is_downloading_active":true,"downloaded_size":1024}});
+    let mut decoder = Decoder::default();
+    let mut m = json!({"id":20971520000_i64,"chat_id":7,"date":10,"is_outgoing":false,
+        "content":{"@type":"messageVoiceNote","is_listened":false,"caption":{"text":"Voice caption","entities":[]},
+            "voice_note":{"duration":12,"waveform":"IIhBivk=","mime_type":"audio/ogg","voice":file}}});
+    let events = decode(
+        &mut decoder,
+        &json!({"@type":"updateNewMessage","message":m}).to_string(),
+    );
+    let Event::IncomingMessage(message) = &events[0] else {
+        panic!("message")
+    };
+    let Some(Attachment::Voice(v)) = &message.attachment else {
+        panic!("voice")
+    };
+    assert_eq!(v.waveform, [0, 1, 2, 3, 4, 5, 6, 31]);
+    assert!(!v.listened);
+    assert_eq!(v.file.downloaded, 1024);
+    assert!(v.file.downloading);
+    assert_eq!(message.text, "Voice caption");
+    m["content"]["voice_note"]["waveform"] =
+        json!(base64::engine::general_purpose::STANDARD.encode([0u8; 257]));
+    assert!(
+        decoder
+            .decode(
+                &json!({"@type":"updateNewMessage","message":m}).to_string(),
+                |_| {}
+            )
+            .is_err()
+    );
+    m["content"] = json!({"@type":"messageDocument","document":{"file_name":"\u{754c}".repeat(200),"document":file},"caption":{"text":"Document caption","entities":[]}});
+    let events = decode(
+        &mut decoder,
+        &json!({"@type":"updateNewMessage","message":m}).to_string(),
+    );
+    let Event::IncomingMessage(message) = &events[0] else {
+        panic!("message")
+    };
+    let Some(Attachment::Document(d)) = &message.attachment else {
+        panic!("document")
+    };
+    assert!(d.name.len() <= 256 && d.name.len() % 3 == 0);
+    assert_eq!(message.text, "Document caption");
+    for format in ["stickerFormatWebp", "stickerFormatTgs", "stickerFormatWebm"] {
+        m["content"] = json!({"@type":"messageSticker","sticker":{"width":512,"height":256,"emoji":"\u{1f916}".repeat(100),"format":{"@type":format},"sticker":file}});
+        let events = decode(
+            &mut decoder,
+            &json!({"@type":"updateNewMessage","message":m}).to_string(),
+        );
+        let Event::IncomingMessage(message) = &events[0] else {
+            panic!("message")
+        };
+        let Some(Attachment::Sticker(s)) = &message.attachment else {
+            panic!("sticker")
+        };
+        assert!(s.emoji.len() <= 64);
+        assert_eq!(s.animated, format != "stickerFormatWebp");
+        assert_eq!(message.photo.is_some(), format == "stickerFormatWebp");
+        assert_eq!(message.text, "");
+    }
+    let events = decode(
+        &mut decoder,
+        r#"{"@type":"updateMessageContentOpened","chat_id":7,"message_id":20971520000}"#,
+    );
+    assert_eq!(
+        events,
+        [Event::MessageContentOpened {
+            chat: ChatId(7),
+            message: MessageId(20971520000)
+        }]
+    );
+}
+#[test]
+fn explicit_file_failure_is_retryable_and_does_not_expose_server_text() {
+    let events = decode(
+        &mut Decoder::default(),
+        r#"{"@type":"error","code":400,"message":"sensitive arbitrary text","@extra":{"command":"download","file":42}}"#,
+    );
+    assert_eq!(events, [Event::FileDownloadFailed(42)]);
+}
+
+#[test]
+fn round_and_single_emoji_are_media_instead_of_placeholders() {
+    use serde_json::json;
+    let file = json!({"id":42,"size":4096,"local":{}});
+    for content in [
+        json!({"@type":"messageVideoNote","is_viewed":false,"video_note":{"duration":9,"length":9999,"video":file,"thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"width":100,"height":100,"file":file}}}),
+        json!({"@type":"messageAnimatedEmoji","emoji":"\u{1f642}","animated_emoji":{"sticker":null}}),
+        json!({"@type":"messageAnimatedEmoji","emoji":"\u{1f642}","animated_emoji":{"sticker":{"format":{"@type":"stickerFormatTgs"},"thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"file":file}}}}),
+        json!({"@type":"messageAnimatedEmoji","emoji":"\u{1f642}","animated_emoji":{"sticker":{"format":{"@type":"stickerFormatWebp"},"width":512,"height":512,"sticker":file}}}),
+    ] {
+        let mut d = Decoder::default();
+        let events = decode(&mut d, &json!({"@type":"updateNewMessage","message":{"id":20971520000_i64,"chat_id":7,"date":10,"is_outgoing":false,"content":content}}).to_string());
+        let Event::IncomingMessage(m) = &events[0] else {
+            panic!("message")
+        };
+        assert!(m.attachment.is_some(), "missing media metadata");
+        assert!(m.text.is_empty());
+        if content["@type"] == "messageAnimatedEmoji" {
+            let Some(tg_core::Attachment::Emoji(emoji)) = &m.attachment else {
+                panic!("emoji")
+            };
+            assert_eq!(emoji.emoji, "\u{1f642}");
+            assert_eq!(
+                m.photo.is_some(),
+                content["animated_emoji"]["sticker"]["format"]["@type"] == "stickerFormatWebp"
+            );
+        }
+        let events = decode(&mut d, &json!({"@type":"updateNewChat","chat":{"id":7,"title":"Test","last_message":{"id":20971520000_i64,"date":10,"content":content},"positions":[{"list":{"@type":"chatListMain"},"order":"100"}]}}).to_string());
+        let Event::ChatListChanged(ChatListChange::Insert { chat, .. }) = &events[0] else {
+            panic!("chat")
+        };
+        assert_eq!(
+            chat.last_message.as_ref().unwrap().text,
+            if content["@type"] == "messageVideoNote" {
+                "Video message"
+            } else {
+                "\u{1f642}"
+            }
+        );
+    }
+}
+
+#[test]
+fn round_size_is_bounded_and_emoji_quotes_preserve_the_emoji() {
+    use serde_json::json;
+    let mut decoder = Decoder::default();
+    for (length, expected) in [(0, 1), (240, 240), (i64::MAX, 240)] {
+        let events=decode(&mut decoder,&json!({"@type":"updateNewMessage","message":{"id":20971520000_i64,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageVideoNote","is_viewed":true,"video_note":{"duration":4,"length":length,"video":{"id":42,"local":{}}}}}}).to_string());
+        let Event::IncomingMessage(m) = &events[0] else {
+            panic!("message")
+        };
+        let Some(tg_core::Attachment::Round(r)) = &m.attachment else {
+            panic!("round")
+        };
+        assert_eq!(r.length, expected);
+        assert!(r.viewed);
+        assert_eq!(r.duration, 4);
+    }
+    let events=decode(&mut decoder,&json!({"@type":"updateNewMessage","message":{"id":20971520000_i64,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageText","text":{"text":"Reply","entities":[]}},"reply_to":{"@type":"messageReplyToMessage","chat_id":7,"message_id":20970471424_i64,"content":{"@type":"messageAnimatedEmoji","emoji":"\u{1f642}"}}}}).to_string());
+    let Event::IncomingMessage(m) = &events[0] else {
+        panic!("message")
+    };
+    assert_eq!(m.reply.as_ref().unwrap().preview, "\u{1f642}");
 }

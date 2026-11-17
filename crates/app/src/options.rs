@@ -8,6 +8,9 @@ pub(crate) struct Options {
     pub help: bool,
     pub demo_scroll: Option<u32>,
     pub demo_video: Option<u32>,
+    pub demo_voice: Option<u32>,
+    pub demo_round: Option<u32>,
+    pub demo_stickers: bool,
 }
 impl Options {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, &'static str> {
@@ -29,6 +32,28 @@ impl Options {
                         .ok_or("--demo-scroll requires 1..86400 seconds")?;
                     options.demo = true;
                     options.demo_scroll = Some(seconds);
+                }
+                "--demo-stickers" => {
+                    options.demo = true;
+                    options.demo_stickers = true;
+                }
+                "--demo-round" => {
+                    options.demo = true;
+                    options.demo_round = Some(
+                        args.next()
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .filter(|s| (3..=86400).contains(s))
+                            .ok_or("--demo-round requires 3..86400 seconds")?,
+                    );
+                }
+                "--demo-voice" => {
+                    options.demo = true;
+                    options.demo_voice = Some(
+                        args.next()
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .filter(|s| (3..=86400).contains(s))
+                            .ok_or("--demo-voice requires 3..86400 seconds")?,
+                    );
                 }
                 "--demo-video" => {
                     let seconds = args
@@ -82,6 +107,26 @@ mod tests {
             vec!["--unknown"],
         ] {
             assert!(Options::parse(args.into_iter().map(str::to_owned)).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    #[test]
+    fn attachment_demo_flags_are_explicit_and_voice_duration_is_bounded() {
+        let s = Options::parse(["--demo-stickers".into()]).unwrap();
+        assert!(s.demo && s.demo_stickers);
+        let v = Options::parse(["--demo-voice".into(), "12".into()]).unwrap();
+        assert!(v.demo);
+        assert_eq!(v.demo_voice, Some(12));
+        let r = Options::parse(["--demo-round", "8"].map(str::to_owned)).unwrap();
+        assert!(r.demo);
+        assert_eq!(r.demo_round, Some(8));
+        assert!(Options::parse(["--demo-round", "2"].map(str::to_owned)).is_err());
+        for value in ["0", "2", "86401", "x"] {
+            assert!(Options::parse(["--demo-voice".into(), value.into()]).is_err());
         }
     }
 }

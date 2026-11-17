@@ -155,16 +155,26 @@ const DATE: f32 = 40.0;
 const GAP: f32 = 8.0;
 const GAP_RUN: f32 = 2.0;
 const TIME_HEIGHT: f32 = 14.0;
+/// Service pills: 13 px text (bubbles use 14 px), as in Telegram, and their padding.
+const SERVICE_TEXT: f32 = 13.0;
+const SERVICE_PAD_X: f32 = 10.0;
+const SERVICE_PAD_Y: f32 = 4.0;
 /// Telegram allows at most 10 items in one album.
 const MAX_ALBUM: usize = 10;
 
 /// Consecutive messages with one non-zero album ID form one row, at most MAX_ALBUM each.
+/// Photos and videos of one album share a grid in one bubble. Files, voice notes and other
+/// attachments sent as an album stay separate rows, each with its own card and actions.
+fn in_grid(message: &Message) -> bool {
+    message.album != 0 && message.attachment.is_none()
+}
 pub(crate) fn groups(messages: &[Message]) -> Vec<Range<usize>> {
     let mut groups: Vec<Range<usize>> = Vec::new();
     for (i, message) in messages.iter().enumerate() {
         match groups.last_mut() {
             Some(last)
-                if message.album != 0
+                if in_grid(message)
+                    && in_grid(&messages[last.start])
                     && messages[last.start].album == message.album
                     && last.len() < MAX_ALBUM =>
             {
@@ -210,6 +220,7 @@ pub(crate) struct Feed {
     pub jump_unread: Cell<bool>,
     pub jump_target: Cell<Option<MessageId>>,
     pub highlight: Cell<Option<MessageId>>,
+    pub audio: Cell<Option<(MessageId, tg_core::VideoState)>>,
     // Only viewport rows own raster images, at most 64 rows and 96 MiB in total.
     visible: RefCell<Vec<Cached>>,
     pub media: RefCell<Option<Rc<RefCell<Media>>>>,
@@ -229,6 +240,7 @@ impl Feed {
             jump_unread: Cell::new(false),
             jump_target: Cell::new(None),
             highlight: Cell::new(None),
+            audio: Cell::new(None),
             notify: ModelNotify::default(),
         })
     }
@@ -249,7 +261,9 @@ impl Feed {
         let date = previous.is_none_or(|p| clock::day(p.date) != day);
         // One sender within ten minutes on one day is drawn as a run of bubbles.
         let run = |a: &Message, b: &Message| {
-            a.outgoing == b.outgoing
+            !a.service
+                && !b.service
+                && a.outgoing == b.outgoing
                 && a.sender_id == b.sender_id
                 && (b.date - a.date).abs() < 600
                 && clock::day(a.date) == clock::day(b.date)
@@ -418,14 +432,37 @@ impl Feed {
         let scale = self.scale.get().clamp(0.5, 4.0);
         let max_width = self.width.get().clamp(80.0, 504.0);
         let (first, last) = (&group[0], &group[group.len() - 1]);
-        let media = group.len() > 1 || first.photo.is_some() || first.video.is_some();
+        if first.service {
+            return (
+                self.render_service(first, context, scale, max_width),
+                Vec::new(),
+            );
+        }
+        let round = matches!(first.attachment, Some(tg_core::Attachment::Round(_)));
+        let sticker = matches!(
+            first.attachment,
+            Some(
+                tg_core::Attachment::Sticker(_)
+                    | tg_core::Attachment::Emoji(_)
+                    | tg_core::Attachment::Round(_)
+            )
+        );
+        let card = matches!(
+            first.attachment,
+            Some(tg_core::Attachment::Voice(_) | tg_core::Attachment::Document(_))
+        );
+        let card_height = if card { 64.0 } else { 0.0 };
+        let media =
+            !card && (sticker || group.len() > 1 || first.photo.is_some() || first.video.is_some());
         // An album shows one caption: the first photo caption that is not empty.
-        let caption = if media {
+        let caption = if sticker {
+            None
+        } else if media {
             group
                 .iter()
                 .find(|m| (m.photo.is_some() || m.video.is_some()) && !m.text.is_empty())
         } else {
-            Some(first)
+            (!card || !first.text.is_empty()).then_some(first)
         };
         let sizes: Vec<(f32, f32)> = if media {
             group
@@ -442,7 +479,31 @@ impl Feed {
         } else {
             Vec::new()
         };
-        let (frames, media_width, media_height) = album_layout(&sizes, max_width);
+        let (frames, media_width, media_height) =
+            if let Some(tg_core::Attachment::Round(r)) = &first.attachment {
+                let d = f32::from(r.length.clamp(1, 240)).min(max_width);
+                (vec![[0.0, 0.0, d, d]], d, d)
+            } else if let Some(tg_core::Attachment::Sticker(s) | tg_core::Attachment::Emoji(s)) =
+                &first.attachment
+            {
+                let limit = if matches!(first.attachment, Some(tg_core::Attachment::Emoji(_))) {
+                    128.0_f32
+                } else {
+                    180.0
+                };
+                if matches!(first.attachment, Some(tg_core::Attachment::Emoji(_)))
+                    && first.photo.is_none()
+                {
+                    let d = limit.min(max_width);
+                    (vec![[0.0, 0.0, d, d]], d, d)
+                } else {
+                    let factor = limit.min(max_width) / f32::from(s.width.max(s.height).max(1));
+                    let (w, h) = (f32::from(s.width) * factor, f32::from(s.height) * factor);
+                    (vec![[0.0, 0.0, w, h]], w, h)
+                }
+            } else {
+                album_layout(&sizes, max_width)
+            };
         let sender = if context.continued || first.outgoing {
             None
         } else {
@@ -466,7 +527,13 @@ impl Feed {
         let forward_height = if first.forwarded.is_some() { 22.0 } else { 0.0 };
         let quote_height = if first.reply.is_some() { 44.0 } else { 0.0 };
         let header_height = forward_height + quote_height;
-        let available = if media { media_width } else { max_width } - 2.0 * PAD;
+        let available = if card {
+            max_width.min(330.0)
+        } else if media {
+            media_width
+        } else {
+            max_width
+        } - 2.0 * PAD;
         let text = caption.map(|message| {
             self.engine
                 .borrow_mut()
@@ -486,7 +553,10 @@ impl Feed {
         } else {
             0.0
         };
-        let text_y = if media {
+        let attachment_y = PAD_TOP + sender_height + header_height;
+        let text_y = if card {
+            attachment_y + card_height + 6.0
+        } else if media {
             media_y + media_height + 6.0
         } else {
             PAD_TOP + sender_height + header_height
@@ -502,7 +572,9 @@ impl Feed {
         } else {
             (text_width.max(time_width), true)
         };
-        let mut bubble_width = if media {
+        let mut bubble_width = if card {
+            max_width.min(330.0)
+        } else if media {
             media_width
         } else {
             content_width + 2.0 * PAD
@@ -516,10 +588,12 @@ impl Feed {
         }
         let bubble_height = if text.is_some() {
             text_y + text_height + if footer { FOOTER } else { 0.0 } + PAD_BOTTOM
+        } else if card {
+            attachment_y + card_height + FOOTER + PAD_BOTTOM
         } else {
-            media_y + media_height
+            media_y + media_height + if round { 26.0 } else { 0.0 }
         };
-        let over_media = text.is_none();
+        let over_media = text.is_none() && !card;
         let (time_x, time_y) = if over_media {
             (
                 bubble_width - time_width - 10.0,
@@ -534,31 +608,64 @@ impl Feed {
         let bubble_y = if context.date { DATE } else { 0.0 }
             + if context.unread { 32.0 } else { 0.0 }
             + if context.continued { GAP_RUN } else { GAP };
-        let cells: Vec<(MessageId, f32, f32)> = group
+        let mut cells: Vec<(MessageId, f32, f32)> = group
             .iter()
             .zip(&frames)
             .map(|(m, f)| (m.id, f[2], f[3]))
             .collect();
+        if card && first.photo.is_some() {
+            cells.push((first.id, 48.0, 48.0));
+        }
         let cell_rows: Vec<PhotoCell> = group
             .iter()
             .zip(&frames)
-            .map(|(m, f)| PhotoCell {
-                image: Image::default(),
-                label: if m.photo.is_some() || m.video.is_some() {
-                    Default::default()
+            .map(|(m, f)| {
+                let emoji = if let Some(tg_core::Attachment::Emoji(s)) = &m.attachment
+                    && m.photo.is_none()
+                {
+                    let mut emoji = m.clone();
+                    emoji.text.clone_from(&s.emoji);
+                    emoji.entities.clear();
+                    Some(
+                        self.engine
+                            .borrow_mut()
+                            .render_emoji(&emoji, scale, f[2] * scale),
+                    )
                 } else {
-                    m.text.as_str().into()
-                },
-                x: f[0],
-                y: f[1],
-                width: f[2],
-                height: f[3],
-                video: m.video.is_some(),
-                duration: m
-                    .video
-                    .as_ref()
-                    .map_or_else(String::new, |v| clock::duration(v.duration))
-                    .into(),
+                    None
+                };
+                PhotoCell {
+                    raster_width: emoji.as_ref().map_or(0.0, |t| t.width as f32 / scale),
+                    raster_height: emoji.as_ref().map_or(0.0, |t| t.height as f32 / scale),
+                    image: emoji.map_or_else(Image::default, |t| {
+                        Image::from_rgba8_premultiplied(
+                            SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                                &t.pixels, t.width, t.height,
+                            ),
+                        )
+                    }),
+                    label: if m.photo.is_some() || m.video.is_some() {
+                        Default::default()
+                    } else {
+                        if matches!(m.attachment, Some(tg_core::Attachment::Emoji(_))) {
+                            Default::default()
+                        } else if let Some(tg_core::Attachment::Sticker(s)) = &m.attachment {
+                            s.emoji.as_str().into()
+                        } else {
+                            m.text.as_str().into()
+                        }
+                    },
+                    x: f[0],
+                    y: f[1],
+                    width: f[2],
+                    height: f[3],
+                    video: m.video.is_some(),
+                    duration: m
+                        .video
+                        .as_ref()
+                        .map_or_else(String::new, |v| clock::duration(v.duration))
+                        .into(),
+                }
             })
             .collect();
         let rendered = text.map_or_else(Image::default, |t| {
@@ -574,7 +681,12 @@ impl Feed {
             time.insert_str(0, "clipped  ");
         }
         let permissions = first.permissions.unwrap_or_default();
-        let row = MessageRow {
+        let mut row = MessageRow {
+            service: false,
+            attachment_y,
+            round,
+            emoji: matches!(first.attachment, Some(tg_core::Attachment::Emoji(_))),
+            sticker,
             key: last.id.0.to_string().into(),
             can_edit: group.len() == 1 && first.outgoing && first.is_text && permissions.edit,
             can_reply: context.complete && permissions.reply,
@@ -641,11 +753,58 @@ impl Feed {
             time_y,
             time_over_media: over_media,
             checks,
+            ..Default::default()
         };
+        crate::attachments::decorate(&mut row, first, self.audio.get());
         (row, cells)
     }
+    /// A centred translucent pill ("Anna joined the group"), without a bubble, time or menu.
+    fn render_service(
+        &self,
+        message: &Message,
+        context: &Context,
+        scale: f32,
+        max_width: f32,
+    ) -> MessageRow {
+        let available = (max_width - 2.0 * SERVICE_PAD_X).max(1.0);
+        let text =
+            self.engine
+                .borrow_mut()
+                .render_sized(message, scale, available * scale, SERVICE_TEXT);
+        let (text_width, text_height) = (text.width as f32 / scale, text.height as f32 / scale);
+        let bubble_y =
+            if context.date { DATE } else { 0.0 } + if context.unread { 32.0 } else { 0.0 } + GAP;
+        let bubble_height = text_height + 2.0 * SERVICE_PAD_Y;
+        MessageRow {
+            key: message.id.0.to_string().into(),
+            service: true,
+            unread: context.unread,
+            unread_y: if context.date { DATE } else { 0.0 },
+            date: if context.date {
+                clock::day_label(message.date).into()
+            } else {
+                Default::default()
+            },
+            height: bubble_y + bubble_height + if context.last { 10.0 } else { 0.0 },
+            bubble_y,
+            bubble_width: text_width + 2.0 * SERVICE_PAD_X,
+            bubble_height,
+            rendered: Image::from_rgba8_premultiplied(
+                SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                    &text.pixels,
+                    text.width,
+                    text.height,
+                ),
+            ),
+            text_y: SERVICE_PAD_Y,
+            text_width,
+            text_height,
+            cells: ModelRc::new(VecModel::from(Vec::<PhotoCell>::new())),
+            ..Default::default()
+        }
+    }
     fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
-        if messages[range.start].album == 0 || range.len() == MAX_ALBUM {
+        if !in_grid(&messages[range.start]) || range.len() == MAX_ALBUM {
             return true;
         }
         let h = self.history.borrow();
@@ -745,6 +904,24 @@ impl Model for Feed {
         let visible = self.visible.borrow();
         let cached = visible.get(row)?;
         let mut row = cached.row.clone();
+        if let Some(message) = self
+            .history
+            .borrow()
+            .messages
+            .iter()
+            .find(|m| m.id == cached.context.members[0])
+        {
+            crate::attachments::decorate(&mut row, message, self.audio.get());
+            if matches!(message.attachment, Some(tg_core::Attachment::Document(_)))
+                && let Some(photo) = &message.photo
+                && let Some(media) = self.media.borrow().as_ref()
+            {
+                row.attachment_image =
+                    media
+                        .borrow_mut()
+                        .image(Key::new(photo, 48.0, 48.0, self.scale.get()));
+            }
+        }
         if let Some(media) = self.media.borrow().as_ref() {
             let cells: Vec<PhotoCell> = cached
                 .row
@@ -848,14 +1025,19 @@ mod feed_tests {
     use tg_core::{Message, MessageId};
     fn message(n: i64) -> Message {
         Message {
+            attachment: None,
             reply: None,
             forwarded: None,
             edited: false,
             is_text: true,
+            service: false,
             permissions: None,
             video: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
                 file: tg_core::MediaFile {
+                    size: 0,
+                    downloaded: 0,
+                    downloading: false,
                     id: n as i32,
                     path: None,
                 },
@@ -987,6 +1169,9 @@ mod feed_tests {
         m.album = album;
         m.photo = Some(tg_core::Photo {
             file: tg_core::MediaFile {
+                size: 0,
+                downloaded: 0,
+                downloading: false,
                 id: n as i32,
                 path: None,
             },
@@ -1000,6 +1185,35 @@ mod feed_tests {
             String::new()
         };
         m
+    }
+
+    #[test]
+    fn files_sent_as_an_album_stay_separate_rows() {
+        let file = |n: i64| {
+            let mut m = message(n);
+            m.album = 91;
+            m.text = String::new();
+            m.attachment = Some(tg_core::Attachment::Document(tg_core::Document {
+                file: tg_core::MediaFile {
+                    size: 4096,
+                    downloaded: 0,
+                    downloading: false,
+                    id: n as i32,
+                    path: None,
+                },
+                name: format!("file-{n}.pdf"),
+            }));
+            m
+        };
+        let messages = vec![
+            file(30),
+            file(31),
+            file(32),
+            album_item(33, 92),
+            album_item(34, 92),
+        ];
+        // Each file keeps its own card (and key); the photos still share one grid.
+        assert_eq!(groups(&messages), vec![0..1, 1..2, 2..3, 3..5]);
     }
 
     #[test]
@@ -1122,11 +1336,13 @@ mod action_tests {
     use super::*;
     fn message(n: i64) -> Message {
         Message {
+            attachment: None,
             video: None,
             reply: None,
             forwarded: None,
             edited: false,
             is_text: false,
+            service: false,
             permissions: None,
             id: MessageId(n * 1048576),
             chat: ChatId(7),

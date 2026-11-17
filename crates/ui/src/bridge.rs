@@ -147,6 +147,7 @@ fn message_bytes(m: &tg_core::Message) -> usize {
             .as_ref()
             .map_or(0, |r| r.sender.capacity() + r.preview.capacity() + 128)
         + m.forwarded.as_ref().map_or(0, String::capacity)
+        + attachment_bytes(&m.attachment)
         + m.text.capacity()
         + m.entities.capacity() * std::mem::size_of::<tg_core::TextEntity>()
         + m.entities
@@ -187,6 +188,7 @@ fn event_bytes(e: &Event) -> usize {
             text,
             entities,
             photo,
+            attachment,
             ..
         } => {
             text.capacity()
@@ -199,11 +201,26 @@ fn event_bytes(e: &Event) -> usize {
                     })
                     .sum::<usize>()
                 + photo.as_ref().map_or(0, photo_bytes)
+                + attachment_bytes(attachment)
         }
         _ => 0,
     }
 }
 
+fn attachment_bytes(value: &Option<tg_core::Attachment>) -> usize {
+    match value {
+        Some(tg_core::Attachment::Voice(v)) => v.waveform.capacity() + file_bytes(&v.file),
+        Some(tg_core::Attachment::Document(d)) => d.name.capacity() + file_bytes(&d.file),
+        Some(tg_core::Attachment::Sticker(s) | tg_core::Attachment::Emoji(s)) => {
+            s.emoji.capacity() + 64
+        }
+        Some(tg_core::Attachment::Round(v)) => file_bytes(&v.file) + 32,
+        None => 0,
+    }
+}
+fn file_bytes(f: &tg_core::MediaFile) -> usize {
+    128 + f.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2)
+}
 fn photo_bytes(p: &tg_core::Photo) -> usize {
     p.minithumbnail.capacity() + p.file.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2) + 128
 }

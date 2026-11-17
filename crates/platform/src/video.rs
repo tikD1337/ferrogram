@@ -1,5 +1,9 @@
 //! Video player: one video at a time, created only while the player is open.
-use std::{cell::RefCell, sync::mpsc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    sync::mpsc,
+    time::Duration,
+};
 
 use tg_core::{VideoRequest, VideoState};
 
@@ -9,6 +13,7 @@ use crate::video_ffi::{Backdrop, ChildWindow, Message, Report, run};
 /// Owned by the UI thread: requests arrive from UI callbacks, which also own the child window.
 pub struct Player {
     sender: mpsc::SyncSender<Message>,
+    audio: Cell<bool>,
     window: RefCell<Option<ChildWindow>>,
     backdrop: RefCell<Option<Backdrop>>,
     report: Report,
@@ -44,6 +49,7 @@ impl Player {
         match result.recv() {
             Ok(Ok(())) => Ok(Self {
                 sender,
+                audio: Cell::new(false),
                 window: RefCell::new(None),
                 backdrop: RefCell::new(None),
                 report,
@@ -78,11 +84,44 @@ impl Player {
                     window: handle,
                     width: rect.width,
                     height: rect.height,
+                    token: None,
                 })
+            }
+            VideoRequest::OpenRound {
+                path,
+                window,
+                rect,
+                viewport,
+                token,
+            } => {
+                self.close();
+                let child = ChildWindow::create(window, rect)?;
+                child.round(viewport)?;
+                let handle = child.handle();
+                *self.window.borrow_mut() = Some(child);
+                queued(Message::Open {
+                    path,
+                    window: handle,
+                    width: rect.width,
+                    height: rect.height,
+                    token: Some(token),
+                })
+            }
+            VideoRequest::RoundViewport(viewport) => {
+                if let Some(child) = self.window.borrow().as_ref() {
+                    child.round(viewport)?;
+                }
+                Ok(())
+            }
+            VideoRequest::OpenAudio { path, token } => {
+                self.close();
+                queued(Message::OpenAudio { path, token })?;
+                self.audio.set(true);
+                Ok(())
             }
             VideoRequest::Move(rect) => {
                 if let Some(child) = self.window.borrow().as_ref() {
-                    child.place(rect);
+                    child.place(rect)?;
                 }
                 queued(Message::Resize {
                     width: rect.width,
@@ -111,9 +150,10 @@ impl Player {
     }
 
     fn close(&self) {
-        let Some(child) = self.window.borrow_mut().take() else {
+        let child = self.window.borrow_mut().take();
+        if !self.audio.replace(false) && child.is_none() {
             return;
-        };
+        }
         let (done, stopped) = mpsc::sync_channel(1);
         if self.sender.send(Message::Close(done)).is_ok() {
             // The engine must stop rendering before its window disappears; Shutdown is quick,

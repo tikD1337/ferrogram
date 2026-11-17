@@ -5,6 +5,8 @@ use crate::{ChatId, MessageId, Secret};
 /// Non-secret command identity for associating an error with a UI action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandKind {
+    DownloadFileUrgent,
+    OpenMessageContent,
     ReplyText,
     EditText,
     DeleteMessages,
@@ -36,6 +38,12 @@ pub enum CommandKind {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Command {
+    /// A user-requested voice/document download, above viewport photo prefetch priority.
+    DownloadFileUrgent(i32),
+    OpenMessageContent {
+        chat: ChatId,
+        message: MessageId,
+    },
     ReplyText {
         chat: ChatId,
         reply: MessageId,

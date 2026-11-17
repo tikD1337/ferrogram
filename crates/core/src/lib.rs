@@ -6,6 +6,11 @@
 //!
 //! The set of commands and events is deliberately small and grows with the functionality.
 
+mod attachments;
+pub use attachments::{
+    Attachment, Document, FileRequest, Round, Sticker, Voice, decode_waveform, is_executable_name,
+    waveform_bars,
+};
 mod command;
 mod event;
 mod ids;

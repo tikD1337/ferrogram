@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tg_core::{Chat, ChatId, ChatListChange, CommandError, Event, MessageId, MessagePreview};
 
-use crate::mapping::{error, integer, malformed, string};
+use crate::mapping::{Users, error, integer, malformed, string};
 
 pub(crate) const MAX_CHATS: usize = 2048;
 const MAX_TITLE_BYTES: usize = 1024;
@@ -111,17 +111,43 @@ fn main_order(positions: &Value) -> Result<i64, CommandError> {
     Ok(0)
 }
 
-fn preview(value: &Value) -> Result<Option<MessagePreview>, CommandError> {
+fn preview(
+    value: &Value,
+    users: &Users,
+    title: &str,
+    channel: bool,
+) -> Result<Option<MessagePreview>, CommandError> {
     if value.is_null() {
         return Ok(None);
     }
     let content = &value["content"];
+    // Service messages read as in the feed: "Anna joined the group via invite link".
+    let outgoing = value["is_outgoing"] == true;
+    let sender = &value["sender_id"];
+    let (sender_id, actor) = if sender["@type"] == "messageSenderUser" {
+        let id = sender["user_id"].as_i64().unwrap_or(0);
+        let name = if outgoing {
+            "You"
+        } else {
+            crate::service::name(users, id)
+        };
+        (id, name)
+    } else {
+        (sender["chat_id"].as_i64().unwrap_or(0), title)
+    };
+    let service = crate::service::text(content, actor, channel, sender_id, users);
     // A photo, video or album item without a caption has an empty caption, not a missing one:
     // show the content label ("Photo") instead of an empty line, as Telegram does.
-    let text = content["text"]["text"]
-        .as_str()
-        .or_else(|| content["caption"]["text"].as_str())
-        .filter(|text| !text.is_empty())
+    let attachment = crate::mapping::attachment_preview(content);
+    let text = attachment
+        .as_deref()
+        .or_else(|| {
+            content["text"]["text"]
+                .as_str()
+                .or_else(|| content["caption"]["text"].as_str())
+                .filter(|text| !text.is_empty())
+        })
+        .or(service.as_deref())
         .unwrap_or_else(|| crate::mapping::content_label(content));
     let mut end = text.len().min(MAX_PREVIEW_BYTES);
     while !text.is_char_boundary(end) {
@@ -178,6 +204,9 @@ impl Chats {
         }
         Ok(())
     }
+    pub(crate) fn is_channel(&self, id: ChatId) -> bool {
+        self.entries.get(&id).is_some_and(|entry| entry.scope == 2)
+    }
     pub(crate) fn title(&self, id: ChatId) -> Option<&str> {
         self.entries.get(&id).map(|entry| entry.chat.title.as_str())
     }
@@ -185,6 +214,7 @@ impl Chats {
     pub(crate) fn apply(
         &mut self,
         value: &Value,
+        users: &Users,
         mut emit: impl FnMut(Event),
     ) -> Result<(), CommandError> {
         let new_chat = value["@type"] == "updateNewChat";
@@ -219,7 +249,12 @@ impl Chats {
                     avatar: crate::mapping::avatar(&chat["photo"])?,
                     id,
                     title: string(&chat["title"], MAX_TITLE_BYTES)?,
-                    last_message: preview(&chat["last_message"])?,
+                    last_message: preview(
+                        &chat["last_message"],
+                        users,
+                        chat["title"].as_str().unwrap_or(""),
+                        scope == 2,
+                    )?,
                     unread_count: chat["unread_count"]
                         .as_u64()
                         .and_then(|n| u32::try_from(n).ok())
@@ -244,7 +279,12 @@ impl Chats {
                     entry.order = integer(&value["position"]["order"])?;
                 }
                 Some("updateChatLastMessage") => {
-                    let last_message = preview(&value["last_message"])?;
+                    let last_message = preview(
+                        &value["last_message"],
+                        users,
+                        &entry.chat.title,
+                        entry.scope == 2,
+                    )?;
                     let order = main_order(&value["positions"])?;
                     changed = entry.chat.last_message != last_message;
                     entry.chat.last_message = last_message;

@@ -12,6 +12,7 @@ mod engine;
 mod ffi;
 mod mapping;
 mod request;
+mod service;
 
 pub use engine::{Engine, EngineParameters};
 pub use mapping::Decoder;

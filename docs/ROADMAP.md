@@ -18,8 +18,10 @@ supported until it has been implemented and tested.
 - [x] Slint feed prototype: 10 000 synthetic messages, memory, CPU and scrolling measurements —
       2026-11-15, `spikes/slint-feed`. The memory and CPU hypothesis is confirmed; questions remain
       about color emoji and text selection (see [ARCHITECTURE.md](ARCHITECTURE.md), section 3).
-- [ ] Resolve the color emoji question: renderer or custom rendering.
-- [ ] Extend the prototype: load earlier history without jumps, images in messages, a large window (4K).
+- [x] Resolve the color emoji question: renderer or custom rendering — 2026-11-15: custom message
+      text rendering with parley and swash (ARCHITECTURE.md, section 3).
+- [x] Extend the prototype: load earlier history without jumps, images in messages — done in the
+      product instead (2026-11-16). A 4K window has not been measured.
 
 **Exit:** the choice of TDLib and Slint is confirmed by measurements or reconsidered.
 
@@ -29,13 +31,16 @@ Result: [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md).
 
 ## Stage 2. Minimal working client
 
-- [ ] Engine thread: start TDLib, `td_receive` loop, domain events.
-- [ ] Database key protection: TPM + DPAPI (after approval of [SECURITY.md](SECURITY.md)).
-- [ ] Authentication: phone number, code, 2FA password.
-- [ ] Virtualized chat list.
-- [ ] Message viewing: history window, loading by page.
-- [ ] Send text.
-- [ ] Network and authentication errors are shown to the user rather than lost.
+- [x] Engine thread: start TDLib, `td_receive` loop, domain events.
+- [x] Database key protection: TPM + DPAPI (after approval of [SECURITY.md](SECURITY.md)).
+- [x] Authentication: phone number, code, 2FA password, and QR code. Phone sign-in confirmed on a
+      live account 2026-11-17.
+- [x] Virtualized chat list.
+- [x] Message viewing: history window, loading by page.
+- [x] Send text.
+- [x] Network and authentication errors are shown to the user rather than lost.
+
+Done 2026-11-16, used daily on a live account since then.
 
 **Exit:** users can sign in, read and write text; all checks (`fmt`, `clippy`, `test`) pass.
 
@@ -53,12 +58,15 @@ Result: [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md).
 
 Ordered by frequency of use:
 
-1. Images and documents, downloading and sending.
-2. Replies, forwarding, editing, deletion.
-3. Windows notifications, tray, counters.
-4. Reactions, stickers, GIF.
+1. Images and documents, downloading and sending. Downloading and viewing done (photos 2026-11-16,
+   files 2026-11-17); sending media is not done.
+2. Replies, forwarding, editing, deletion. Done 2026-11-16.
+3. Windows notifications, tray, counters. Notifications and counters done 2026-11-16; a tray mode
+   that unloads the UI is not done.
+4. Reactions, stickers, GIF. Static stickers done 2026-11-17; reactions, animated stickers and GIF
+   are not done.
 5. Search.
-6. Voice messages.
+6. Voice messages. Playback done 2026-11-17; recording is not done.
 7. Folders, archive, settings, themes.
 8. Multiple accounts.
 9. Master password, Windows Hello, automatic locking.
@@ -116,3 +124,98 @@ work, so the client eventually covers what Telegram Desktop offers:
 - Video playback through the Media Foundation Media Engine (GPU decoding, audio, a native child
   window), opened from a preview with a play button and the duration. Next for video: play while
   downloading, GIFs and round video messages, inline autoplay of short muted clips.
+
+## Progress (2026-11-17): media messages
+
+- Voice messages: waveform, seeking and playback through the Media Engine in audio-only mode
+  (the system Opus decoder handles OGG/Opus voice notes; no extra library). One voice or round
+  message plays at a time, and playback marks it listened.
+- Round video messages play inside their circle in the feed: the video child window gets an
+  elliptic region clipped to the feed and follows the row while scrolling.
+- Files: download with progress and cancel, then open with the default application. Opened files
+  get the internet-zone mark (SmartScreen, Protected View), and programs and scripts need a
+  confirmation first. Downloaded files can be shown in their folder.
+- Static WebP stickers and single animated emoji are drawn without a bubble. Animated (TGS/WebM)
+  stickers show a still frame or the emoji until animation lands.
+- Service messages (joins, added and removed members, pins, title and photo changes, timers,
+  topics, video chats, gifts) read as in Telegram Desktop and are drawn as centred pills, also
+  in the chat list preview.
+- Release builds no longer open a console window; startup errors show a message box.
+- Sign-in asks for the phone number first and requests a QR code only on demand. TDLib rejects
+  a phone number once a QR code was requested, so switching back from the QR screen needs a
+  logOut and an engine restart; that is the next sign-in task.
+- The interface tokens (colours, type sizes, radii) live in the `Theme` global and are recorded
+  in `.interface-design/system.md`.
+
+Next: reactions, pinning, message links and selection; a clear recovery screen when the
+database key cannot be unlocked; switching from QR back to phone sign-in.
+
+
+## Security work (2026-11-17)
+
+A review of [SECURITY.md](SECURITY.md) against the code. Implemented today: the database key is
+wrapped by a non-exportable TPM key and DPAPI (threat T1, copied files), and our copy of the key is
+zeroed after it is handed to TDLib. The TPM key is not bound to boot state (PCRs), a PIN or a user
+gesture, so any process running as the same Windows user can ask the TPM to unwrap it. Planned,
+in order of value for cost:
+
+1. **Process hardening (T3, client running).** A process DACL that denies memory reads and thread
+   injection to other processes of the same user; `SetProcessMitigationPolicy` (no dynamic code,
+   no extension points, signed DLLs only, as far as TDLib and the renderer allow);
+   `SetDefaultDllDirectories` for a safe DLL search order. Measure that the client and TDLib still
+   start and that RAM and CPU do not change.
+2. **Lock the key page in memory** with `VirtualLock`, so the key never reaches the page file. The
+   code only zeroes it today (SECURITY.md now says so).
+3. **Recovery when the key cannot be unlocked.** Today a TPM refusal left a bare error code. Show a
+   clear screen instead: move the old key and database to a dated backup folder and sign in again;
+   the chats come back from the server. Nothing is deleted without the user's confirmation.
+4. **Master password (T2, client closed).** Optional, off by default (decided 2026-11-16). Argon2id
+   from an audited RustCrypto implementation, wrapping added as the third layer; asked at start.
+   It is the only measure that stops malware running as the same user from unwrapping the key.
+5. **Windows Hello as an alternative to the password (T2).** Research first: the Windows Hello key
+   API signs and does not decrypt. Evaluate deriving a key from a signature of a fixed challenge, or
+   a TPM key that requires user presence, against published attacks before choosing.
+6. **Automatic locking.** An idle timer that removes keys from memory: interface-only lock by
+   default (notifications keep working), full lock (TDLib shut down) as a setting.
+7. **Copy test.** A repeatable test that a copied data folder does not open in another Windows
+   profile or on another computer (T1), and that a wrong key never opens the database.
+
+Out of scope, as decided in SECURITY.md: a Chrome-style SYSTEM service for application binding,
+and anti-debugging or obfuscation. Malware with administrator or kernel rights (T4) cannot be
+stopped by any user-mode client.
+
+## Documented but not yet planned (2026-11-17)
+
+Promises and open items found in the other documents that had no place in this plan.
+
+**Text and emoji** (ARCHITECTURE.md, sections 3 and 7)
+
+- Text selection inside messages and copying the selection. The prototype had it; the client
+  only copies a whole message from the menu.
+- The Apple emoji set, loaded from a local directory and never committed, plus a freely licensed
+  fallback set for public builds. Today only an optional emoji font (`TG_EMOJI_FONT`) is supported.
+- Custom emoji inside text (stickers in the line).
+- Screen reader accessibility: message text is drawn as an image, so its text must be exposed
+  separately.
+
+**Themes** (ARCHITECTURE.md, section 7)
+
+- Finish the OLED theme: chat list, panels, hover and selection states, and no large static bright
+  areas that could burn in.
+
+**Security** (SECURITY.md)
+
+- Run `cargo audit` and `cargo deny` in CI.
+- Recommend two-step verification in the interface, next to the list of active sessions.
+- Check what happens to the key after a TPM reset or a firmware update, and on a machine without
+  a TPM (the DPAPI-only fallback with its warning).
+- TDLib does not encrypt downloaded files. Decide whether to accept and document this, or to keep
+  the cache in a protected location and clear it on lock.
+
+**Release** (ARCHITECTURE.md, section 6)
+
+- How users get `tdjson.dll`: release builds from official TDLib source at a pinned commit, with
+  the hash recorded and verified.
+- Review the Telegram API terms for third-party clients before the first public release.
+- A distributable package (an archive or an installer) and release notes.
+

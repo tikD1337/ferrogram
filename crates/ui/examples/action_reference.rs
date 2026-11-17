@@ -10,6 +10,7 @@ mod demo_backend;
 
 fn fixture(n: i64) -> tg_core::Message {
     tg_core::Message {
+        attachment: None,
         video: None,
         id: MessageId(n * 1048576),
         chat: tg_core::ChatId(7),
@@ -28,6 +29,7 @@ fn fixture(n: i64) -> tg_core::Message {
         sender_id: 1000,
         sender: (n != 19998).then(|| "Anna Petrova".into()),
         is_text: true,
+        service: false,
         permissions: None,
         edited: n == 19998,
         forwarded: (n == 19997).then(|| "Design review".into()),

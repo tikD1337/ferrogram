@@ -174,10 +174,12 @@ mod tests {
     }
     fn message(n: i64) -> Message {
         Message {
+            attachment: None,
             reply: None,
             forwarded: None,
             edited: false,
             is_text: true,
+            service: false,
             permissions: None,
             video: None,
             photo: None,

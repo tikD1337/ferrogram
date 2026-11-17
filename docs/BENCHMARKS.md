@@ -338,3 +338,20 @@ The demo clip is 4 s long, so most of the sample is after the clip ended; decodi
 playing was measured by the probe above (5.6-6.5 % of one core for 720p on the GPU). The video
 is downloaded completely before playback; streaming is a later step. Not verified by eye or on
 a live account yet.
+
+## Media messages (2026-11-17)
+
+Release build (`ferrogram.exe`, 13,679,104 bytes, up from about 13.0 MB before this work). Demo
+mode, sampled once 8 s after start with `Get-Process` by the lead; voice numbers from Codex's run of
+`scripts/measure.ps1` during playback.
+
+| Scenario | Private bytes | Working set | Source |
+| --- | --- | --- | --- |
+| `--demo`, idle | 11.0 MiB | 30.5 MiB | lead |
+| Sticker chat open | 11.4 MiB | not recorded | Codex |
+| Voice message playing (Media Engine, audio only) | 45.0 MiB | not recorded | Codex |
+| `--demo-round 12`, round video playing inline | 94.9 MiB | 104.2 MiB | lead (Codex: 96.3 MiB) |
+
+The lead's 8-second `--demo-voice` sample (11.4 MiB) equals the idle figure, so playback had most
+likely not started yet; it is not a playback figure. Video playback costs about the same as the full video viewer (about 94 MB),
+because the Media Engine and its decoder dominate.
