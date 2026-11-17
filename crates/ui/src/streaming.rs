@@ -74,7 +74,7 @@ impl State {
         ranges.update(&file);
         let mut loaded = LoadedRanges::default();
         loaded.add(&file);
-        let first = ranges.need(0, file.size).unwrap_or(StreamWindow {
+        let first = ranges.need(0, 1, file.size).unwrap_or(StreamWindow {
             offset: 0,
             limit: file.size,
         });
@@ -123,7 +123,7 @@ impl State {
             self.viewer.set_loading(s.waiting || s.engine_waiting);
             status
                 .needed
-                .and_then(|offset| s.ranges.need(offset, s.file.size))
+                .and_then(|offset| s.ranges.need(offset, status.until, s.file.size))
                 .map(|window| download(status.file, window))
         };
         self.send_stream(w, command);

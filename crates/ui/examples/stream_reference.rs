@@ -154,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     file,
                                     token,
                                     needed: Some(3 * tg_core::STREAM_PRELOAD + 17),
+                                    until: 3 * tg_core::STREAM_PRELOAD + 18,
                                     waiting: true,
                                 },
                             );

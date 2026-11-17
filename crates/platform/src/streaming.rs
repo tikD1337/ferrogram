@@ -133,7 +133,9 @@ impl Reader {
     }
     /// Publishes a read's waiting state. A read cancelled by a seek must not publish: its
     /// stale state would hide the request of the read that replaced it.
-    fn report_wait(&self, generation: u64, needed: Option<u64>, waiting: bool) {
+    /// `needed` is the first missing byte and the end of the blocked read: the whole read is
+    /// requested, so a read larger than one download window cannot stay waiting.
+    fn report_wait(&self, generation: u64, needed: Option<(u64, u64)>, waiting: bool) {
         let Ok(mut reported) = self.reported.lock() else {
             return;
         };
@@ -149,11 +151,12 @@ impl Reader {
             self.send(needed, waiting);
         }
     }
-    fn send(&self, needed: Option<u64>, waiting: bool) {
+    fn send(&self, needed: Option<(u64, u64)>, waiting: bool) {
         (self.report)(StreamStatus {
             file: self.file,
             token: self.token,
-            needed,
+            needed: needed.map(|(first, _)| first),
+            until: needed.map_or(0, |(_, until)| until),
             waiting,
         });
     }
@@ -224,7 +227,7 @@ impl Reader {
                     if !waiting {
                         waiting = true;
                         drop(s);
-                        self.report_wait(generation, Some(offset), true);
+                        self.report_wait(generation, Some((offset, offset + count as u64)), true);
                         s = self.state.lock().map_err(|_| ())?;
                     }
                     s = self
@@ -246,7 +249,11 @@ impl Reader {
             if !waiting {
                 waiting = true;
                 drop(s);
-                self.report_wait(generation, Some(end.unwrap_or(offset)), true);
+                self.report_wait(
+                    generation,
+                    Some((end.unwrap_or(offset), offset + count as u64)),
+                    true,
+                );
                 s = self.state.lock().map_err(|_| ())?;
                 continue;
             }
@@ -332,6 +339,7 @@ mod partial_tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
         assert_eq!(status.needed, Some(6));
+        assert_eq!(status.until, 11, "the whole blocked read is reported");
         assert!(result.try_recv().is_err());
         file.prefix = 11;
         r.update(file);
@@ -548,10 +556,10 @@ mod stale_wait_tests {
         // A read of the old generation reaches its report only after a backward seek.
         let old = r.epoch().unwrap();
         r.seek(100, false).unwrap();
-        r.report_wait(old, Some(900), true);
+        r.report_wait(old, Some((900, 1000)), true);
         assert!(rx.try_recv().is_err(), "a cancelled read must not publish");
         // The read that replaced it must still request its own range.
-        r.report_wait(old.wrapping_add(1), Some(100), true);
+        r.report_wait(old.wrapping_add(1), Some((100, 200)), true);
         let status = rx.try_recv().unwrap();
         assert!(status.waiting);
         assert_eq!(status.needed, Some(100));

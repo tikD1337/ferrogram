@@ -24,7 +24,10 @@ impl std::fmt::Debug for StreamFile {
 pub struct StreamStatus {
     pub file: i32,
     pub token: u64,
+    /// First byte the blocked read is missing.
     pub needed: Option<u64>,
+    /// End (exclusive) of the blocked read; at most `needed + 1` when unknown.
+    pub until: u64,
     pub waiting: bool,
 }
 /// Playback time loaded ahead of the position, as Telegram Desktop's `kLoadInAdvanceForRemote`.
@@ -59,26 +62,33 @@ impl StreamRanges {
             self.prefix = file.prefix;
         }
     }
-    /// The player waits for `offset`. Returns the request to send, or `None` when the current
-    /// window already covers it.
-    pub fn need(&mut self, offset: u64, size: u64) -> Option<StreamWindow> {
+    /// The player waits for the bytes from `offset` to `until` (exclusive). Returns the request
+    /// to send, or `None` when the current window already covers them. A read larger than one
+    /// window is requested whole: it is demand, not speculative preload.
+    pub fn need(&mut self, offset: u64, until: u64, size: u64) -> Option<StreamWindow> {
         if offset >= size {
             return None;
         }
+        let until = align_up(until.max(offset + 1));
         if let Some(start) = self.requested
             && offset >= start
         {
             if offset < self.end {
-                return None;
+                return self.grow(until, size);
             }
             // Just past the window: grow it rather than restart the download.
             if offset < self.end.saturating_add(STREAM_PRELOAD) {
-                return self.grow(align_up(offset + 1).saturating_add(STREAM_PRELOAD), size);
+                return self.grow(
+                    align_up(offset + 1)
+                        .saturating_add(STREAM_PRELOAD)
+                        .max(until),
+                    size,
+                );
             }
         }
         let aligned = offset / STREAM_PART * STREAM_PART;
         self.requested = Some(aligned);
-        self.end = aligned.saturating_add(STREAM_PRELOAD).min(size);
+        self.end = aligned.saturating_add(STREAM_PRELOAD).max(until).min(size);
         Some(StreamWindow {
             offset: aligned,
             limit: self.end - aligned,
@@ -184,17 +194,24 @@ mod tests {
     fn seek_coalesces_one_request_and_aligns_parts() {
         let mut r = StreamRanges::default();
         let size = 32 * STREAM_PRELOAD;
-        assert_eq!(r.need(0, size).map(|w| w.offset), Some(0));
-        assert_eq!(r.need(10, size), None);
+        assert_eq!(r.need(0, 1, size).map(|w| w.offset), Some(0));
+        assert_eq!(r.need(10, 10 + 1, size), None);
         assert_eq!(
-            r.need(3 * STREAM_PRELOAD + 17, size).map(|w| w.offset),
+            r.need(3 * STREAM_PRELOAD + 17, 3 * STREAM_PRELOAD + 17 + 1, size)
+                .map(|w| w.offset),
             Some(3 * STREAM_PRELOAD)
         );
-        assert_eq!(r.need(3 * STREAM_PRELOAD + 18, size), None);
-        assert_eq!(r.need(size, size), None);
+        assert_eq!(
+            r.need(3 * STREAM_PRELOAD + 18, 3 * STREAM_PRELOAD + 18 + 1, size),
+            None
+        );
+        assert_eq!(r.need(size, size + 1, size), None);
         r.update(&at(0, 1, size));
-        assert_eq!(r.need(3 * STREAM_PRELOAD + 19, size), None);
-        assert_eq!(r.need(0, size).map(|w| w.offset), Some(0));
+        assert_eq!(
+            r.need(3 * STREAM_PRELOAD + 19, 3 * STREAM_PRELOAD + 19 + 1, size),
+            None
+        );
+        assert_eq!(r.need(0, 1, size).map(|w| w.offset), Some(0));
     }
     #[test]
     fn a_request_asks_for_one_window_not_the_whole_file() {
@@ -202,16 +219,16 @@ mod tests {
         // request for the index at the end of the file waits behind the entire file.
         let mut r = StreamRanges::default();
         let size = 11 * STREAM_PRELOAD;
-        assert_eq!(r.need(0, size), window(0, STREAM_PRELOAD));
+        assert_eq!(r.need(0, 1, size), window(0, STREAM_PRELOAD));
         let tail = size - 2 * STREAM_PART;
-        assert_eq!(r.need(tail + 5, size), window(tail, size));
+        assert_eq!(r.need(tail + 5, tail + 5 + 1, size), window(tail, size));
     }
     #[test]
     fn the_window_slides_while_little_is_in_flight_and_stops_at_the_target() {
         let mut r = StreamRanges::default();
         let size = 64 * STREAM_PRELOAD;
         let target = 3 * STREAM_PRELOAD;
-        assert_eq!(r.need(0, size), window(0, STREAM_PRELOAD));
+        assert_eq!(r.need(0, 1, size), window(0, STREAM_PRELOAD));
         // More than half of the window still in flight: wait.
         r.update(&at(0, STREAM_PRELOAD / 4, size));
         assert_eq!(r.advance(target, size), None);
@@ -231,13 +248,33 @@ mod tests {
         );
     }
     #[test]
+    fn a_blocked_read_larger_than_the_window_gets_all_of_its_bytes_requested() {
+        // A long video's index at the end can exceed one window; asking for one window only
+        // would leave the rest of the read unrequested and the player waiting forever.
+        let mut r = StreamRanges::default();
+        let size = 64 * STREAM_PRELOAD;
+        let index = 60 * STREAM_PRELOAD;
+        assert_eq!(
+            r.need(index, index + 3 * STREAM_PRELOAD, size),
+            window(index, index + 3 * STREAM_PRELOAD)
+        );
+        // A read starting inside the current window but ending past it grows the window.
+        let mut r = StreamRanges::default();
+        assert_eq!(r.need(0, 1, size), window(0, STREAM_PRELOAD));
+        assert_eq!(
+            r.need(10, 2 * STREAM_PRELOAD + 7, size),
+            window(0, 2 * STREAM_PRELOAD + STREAM_PART)
+        );
+        assert_eq!(r.need(20, 2 * STREAM_PRELOAD, size), None);
+    }
+    #[test]
     fn a_read_just_past_the_window_extends_it_instead_of_restarting() {
         let mut r = StreamRanges::default();
         let size = 64 * STREAM_PRELOAD;
-        assert_eq!(r.need(0, size), window(0, STREAM_PRELOAD));
+        assert_eq!(r.need(0, 1, size), window(0, STREAM_PRELOAD));
         r.update(&at(0, STREAM_PRELOAD, size));
         assert_eq!(
-            r.need(STREAM_PRELOAD + 3, size),
+            r.need(STREAM_PRELOAD + 3, STREAM_PRELOAD + 3 + 1, size),
             window(0, 2 * STREAM_PRELOAD + STREAM_PART)
         );
     }
@@ -275,9 +312,9 @@ mod tests {
     fn advance_waits_for_tdlib_to_report_the_new_window() {
         let mut r = StreamRanges::default();
         let size = 64 * STREAM_PRELOAD;
-        r.need(0, size);
+        r.need(0, 1, size);
         r.update(&at(0, STREAM_PRELOAD, size));
-        r.need(40 * STREAM_PRELOAD, size);
+        r.need(40 * STREAM_PRELOAD, 40 * STREAM_PRELOAD + 1, size);
         // A late update for the old window must not move the new one.
         r.update(&at(0, 2 * STREAM_PRELOAD, size));
         assert_eq!(r.advance(48 * STREAM_PRELOAD, size), None);
