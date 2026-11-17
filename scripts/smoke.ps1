@@ -231,7 +231,13 @@ foreach ($name in $selected) {
     try {
         $detail = & $scenarios[$name]
         $seconds = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
-        Write-Host ("  PASS  {0,-9} {1,5} s  {2}" -f $name, $seconds, $detail) -ForegroundColor Green
+        if ("$detail" -like 'SKIPPED*') {
+            Write-Host ("  SKIP  {0,-9} {1,5} s  {2}" -f $name, $seconds, $detail) -ForegroundColor Yellow
+            # Shown as a warning on the GitHub check, so a skip is never mistaken for a pass.
+            if ($env:GITHUB_ACTIONS) { Write-Host "::warning title=Smoke ($name) skipped::$detail" }
+        } else {
+            Write-Host ("  PASS  {0,-9} {1,5} s  {2}" -f $name, $seconds, $detail) -ForegroundColor Green
+        }
     } catch {
         $failed++
         $seconds = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
