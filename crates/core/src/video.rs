@@ -33,17 +33,19 @@ pub enum VideoRequest {
         height: u32,
         bar: i32,
     },
-    /// `window` is the native handle of the main window (an `HWND` on Windows).
+    /// Plays a streamable video from TDLib's partial file while it downloads.
     OpenStream {
         file: crate::StreamFile,
         window: isize,
         rect: VideoRect,
         token: u64,
     },
+    /// New downloaded ranges of the streamed file; wakes a read that waits for them.
     Availability {
         file: crate::StreamFile,
         token: u64,
     },
+    /// `window` is the native handle of the main window (an `HWND` on Windows).
     Open {
         path: PathBuf,
         window: isize,

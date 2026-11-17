@@ -60,7 +60,7 @@ impl Source {
                 }
                 while let Ok(Some(job)) = receiver.recv() {
                     // SAFETY: BeginRead's MF caller owns this writable buffer until MFInvokeCallback completes
-                    // the request. The queue holds at most one read and the length was checked <= 1 MiB.
+                    // the request. The queue holds at most one read and the length was checked <= MAX_READ.
                     let result_object = match job.result.resolve() {
                         Ok(result) => result,
                         Err(_) => {
@@ -135,7 +135,7 @@ impl ByteStream {
         if self.reader.closed() {
             return Err(MF_E_SHUTDOWN.into());
         }
-        if p.is_null() || count > tg_core::STREAM_PRELOAD as u32 {
+        if p.is_null() || count as usize > crate::streaming::MAX_READ {
             return Err(E_INVALIDARG.into());
         }
         Ok(())

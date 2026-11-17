@@ -4,7 +4,11 @@ use std::{
     io::{Read, Seek, SeekFrom},
     sync::{Arc, Condvar, Mutex},
 };
-use tg_core::{STREAM_PRELOAD, StreamFile, StreamStatus};
+use tg_core::{StreamFile, StreamStatus};
+/// Upper bound for one read into Media Foundation's own buffer. The MP4 source reads a whole
+/// sample at a time, and a high-bitrate keyframe can exceed the 1 MiB preload; nothing is copied
+/// or kept here, so the bound only rejects nonsensical requests.
+pub(crate) const MAX_READ: usize = 16 * 1024 * 1024;
 pub(crate) type Report = Arc<dyn Fn(StreamStatus) + Send + Sync>;
 pub(crate) struct Reader {
     state: Mutex<State>,
@@ -144,7 +148,7 @@ impl Reader {
         self.read_inner(output, None)
     }
     fn read_inner(&self, output: &mut [u8], epoch: Option<u64>) -> Result<usize, ()> {
-        if output.len() > STREAM_PRELOAD as usize {
+        if output.len() > MAX_READ {
             return Err(());
         }
         let mut s = self.state.lock().map_err(|_| ())?;
@@ -236,6 +240,7 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+    use tg_core::STREAM_PRELOAD;
     fn reader() -> Arc<Reader> {
         Reader::new(
             StreamFile {
@@ -267,7 +272,7 @@ mod tests {
         let r = reader();
         assert!(r.seek(-1, false).is_err());
         assert!(r.seek(i64::MAX, false).is_err());
-        assert!(r.read(&mut vec![0; STREAM_PRELOAD as usize + 1]).is_err());
+        assert!(r.read(&mut vec![0; MAX_READ + 1]).is_err());
         r.seek(r.length as i64, false).unwrap();
         assert_eq!(r.read(&mut [0; 4]), Ok(0));
     }
@@ -358,6 +363,7 @@ mod partial_tests {
 #[cfg(test)]
 mod range_limit_tests {
     use super::*;
+    use tg_core::STREAM_PRELOAD;
     #[test]
     fn many_seeks_keep_header_and_the_newest_range() {
         let mut file = StreamFile {

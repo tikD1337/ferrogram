@@ -339,6 +339,31 @@ playing was measured by the probe above (5.6-6.5 % of one core for 720p on the G
 is downloaded completely before playback; streaming is a later step. Not verified by eye or on
 a live account yet.
 
+## Video streaming (2026-11-17)
+
+Codex's measurements of the final release build in demo mode. The demo download delivers one
+128 KiB part every two seconds, so this compares the two modes against the same file and the
+same producer; it is not a measurement of a real Telegram download.
+
+| Metric | Streaming | Full download first |
+|---|---|---|
+| Time to the first video frame (`FIRSTFRAMEREADY`), median of 3 runs | 4.2 s | 6.2 s |
+
+Resources while streaming (`scripts/measure.ps1`, three runs of `--demo-video 12`, one
+one-second sample each during playback before the download completed, window 1040x740):
+
+| Metric | Average | Min-max |
+|---|---|---|
+| Private Bytes | 106.6 MiB | 105.7-107.2 MiB |
+| Working set | 125.1 MiB | 121.7-131.6 MiB |
+| CPU, % of one core | 7.1 | 4.6-12.1 |
+
+These are short samples taken while the video plays; the earlier 93.7 MB above was sampled
+mostly after the clip had ended, so the two are not a like-for-like comparison. The reader keeps
+no media bytes: Media Foundation reads into its own buffers, and the reader holds at most 64
+downloaded-range records. Binary size: 13,679,104 -> 13,756,416 bytes (+0.57 %). Not measured
+on a live account yet.
+
 ## Media messages (2026-11-17)
 
 Release build (`ferrogram.exe`, 13,679,104 bytes, up from about 13.0 MB before this work). Demo

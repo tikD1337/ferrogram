@@ -87,13 +87,14 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - [x] Static stickers and single emoji drawn large ¹
 - [x] Service messages ("Anna joined the group") as centred pills ¹
 - [x] Desktop notifications that open the chat ¹
+- [x] Videos start playing while they download, with seeking into parts not yet downloaded ¹
 - [x] Night and OLED themes
 
 <sub>¹ New: tested in demo mode, not yet on a live account.</sub>
 
 **Not yet** — see the [roadmap](docs/ROADMAP.md)
 
-- [ ] Video streaming while downloading, GIFs, animated stickers
+- [ ] GIFs, animated stickers
 - [ ] Reactions, pinning, message links, selecting several messages
 - [ ] Search, folders, settings
 - [ ] Calls, channels with comments, bots, polls

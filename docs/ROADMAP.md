@@ -146,6 +146,14 @@ work, so the client eventually covers what Telegram Desktop offers:
   logOut and an engine restart; that is the next sign-in task.
 - The interface tokens (colours, type sizes, radii) live in the `Theme` global and are recorded
   in `.interface-design/system.md`.
+- Video streaming, as in Telegram Desktop's `Media::Streaming`: a video Telegram marks as
+  streamable starts while it downloads. Media Foundation reads TDLib's partial file at real
+  offsets through a read-only `IMFByteStream`; a read of a missing range waits on a condition
+  variable and asks TDLib to download from that offset (128 KiB parts, 1 MiB preload). Seeking
+  pauses until the target range arrives, the viewer shows a buffering spinner and the
+  downloaded range on the seek bar, and closing the viewer cancels the download. Round videos
+  still download completely first. Tested in demo mode with a throttled download, not yet on a
+  live account.
 
 Next: reactions, pinning, message links and selection; a clear recovery screen when the
 database key cannot be unlocked; switching from QR back to phone sign-in.
