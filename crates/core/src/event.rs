@@ -100,6 +100,9 @@ pub struct Message {
     pub forwarded: Option<String>,
     pub edited: bool,
     pub is_text: bool,
+    /// A service message ("Anna joined the group"): `text` holds its wording and it is drawn as a
+    /// centred pill, not a bubble.
+    pub service: bool,
     /// Populated on demand, never inferred from ownership alone.
     pub permissions: Option<MessagePermissions>,
     pub photo: Option<Photo>,

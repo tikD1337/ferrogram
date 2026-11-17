@@ -73,6 +73,7 @@ fn message() -> tg_core::Message {
         forwarded: None,
         edited: false,
         is_text: true,
+        service: false,
         permissions: None,
         video: None,
         id: MessageId(2097152),

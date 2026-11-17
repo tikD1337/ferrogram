@@ -29,6 +29,7 @@ fn fixture(n: i64) -> tg_core::Message {
         sender_id: 1000,
         sender: (n != 19998).then(|| "Anna Petrova".into()),
         is_text: true,
+        service: false,
         permissions: None,
         edited: n == 19998,
         forwarded: (n == 19997).then(|| "Design review".into()),

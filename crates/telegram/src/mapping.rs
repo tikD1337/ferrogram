@@ -134,7 +134,7 @@ pub(crate) struct Users {
 }
 
 impl Users {
-    fn apply(&mut self, user: &Value) -> Result<(), CommandError> {
+    pub(crate) fn apply(&mut self, user: &Value) -> Result<(), CommandError> {
         let id = integer(&user["id"])?;
         let first = user["first_name"].as_str().unwrap_or("");
         let last = user["last_name"].as_str().unwrap_or("");
@@ -210,7 +210,33 @@ pub(crate) fn message(
         }
         _ => photo,
     };
-    let placeholder = serde_json::json!({"text": content_label(content), "entities": []});
+    let chat = ChatId(integer(&value["chat_id"])?);
+    let outgoing = value["is_outgoing"].as_bool().ok_or_else(malformed)?;
+    let sender_value = &value["sender_id"];
+    let (sender_id, name) = match sender_value["@type"].as_str() {
+        Some("messageSenderUser") => {
+            let id = integer(&sender_value["user_id"])?;
+            (id, users.name(id))
+        }
+        Some("messageSenderChat") => {
+            let id = integer(&sender_value["chat_id"])?;
+            (id, chats.title(ChatId(id)))
+        }
+        _ => (0, None),
+    };
+    // Service messages ("Anna joined the group") are drawn as pills; their text is built here.
+    let actor = if outgoing && sender_id != chat.0 {
+        "You"
+    } else if sender_id > 0 {
+        crate::service::name(users, sender_id)
+    } else {
+        name.unwrap_or("Unknown chat")
+    };
+    let service = crate::service::text(content, actor, chats.is_channel(chat), sender_id, users);
+    let placeholder = serde_json::json!({
+        "text": service.as_deref().unwrap_or_else(|| content_label(content)),
+        "entities": [],
+    });
     let formatted = match content["@type"].as_str() {
         Some("messageText") => &content["text"],
         Some("messagePhoto" | "messageVideo" | "messageDocument" | "messageVoiceNote")
@@ -269,20 +295,6 @@ pub(crate) fn message(
         }
         _ => SendState::Sent,
     };
-    let chat = ChatId(integer(&value["chat_id"])?);
-    let outgoing = value["is_outgoing"].as_bool().ok_or_else(malformed)?;
-    let sender_value = &value["sender_id"];
-    let (sender_id, name) = match sender_value["@type"].as_str() {
-        Some("messageSenderUser") => {
-            let id = integer(&sender_value["user_id"])?;
-            (id, users.name(id))
-        }
-        Some("messageSenderChat") => {
-            let id = integer(&sender_value["chat_id"])?;
-            (id, chats.title(ChatId(id)))
-        }
-        _ => (0, None),
-    };
     // Private chats and channels have the chat itself as the sender: no name is shown.
     let sender = name
         .filter(|_| !outgoing && sender_id != 0 && sender_id != chat.0)
@@ -318,6 +330,7 @@ pub(crate) fn message(
             .then(|| origin(&value["forward_info"]["origin"], users, chats).1),
         edited: integer(&value["edit_date"]).unwrap_or(0) > 0,
         is_text: content["@type"] == "messageText",
+        service: service.is_some(),
         permissions: None,
         video,
         photo,
@@ -392,7 +405,7 @@ impl Decoder {
                 | "updateChatNotificationSettings"
                 | "updateChatReadOutbox"
                 | "updateChatPhoto",
-            ) => self.chats.apply(value, emit)?,
+            ) => self.chats.apply(value, &self.users, emit)?,
             Some("updateUnreadMessageCount") if value["chat_list"]["@type"] == "chatListMain" => {
                 emit(Event::TotalUnreadCount(
                     u32::try_from(integer(&value["unread_count"])?).map_err(|_| malformed())?,

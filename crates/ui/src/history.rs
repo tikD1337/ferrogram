@@ -179,6 +179,7 @@ mod tests {
             forwarded: None,
             edited: false,
             is_text: true,
+            service: false,
             permissions: None,
             video: None,
             photo: None,

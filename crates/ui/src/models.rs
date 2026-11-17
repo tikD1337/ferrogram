@@ -155,6 +155,10 @@ const DATE: f32 = 40.0;
 const GAP: f32 = 8.0;
 const GAP_RUN: f32 = 2.0;
 const TIME_HEIGHT: f32 = 14.0;
+/// Service pills: 13 px text against 15 px in bubbles, as in Telegram, and their padding.
+const SERVICE_TEXT: f32 = 13.0 / 15.0;
+const SERVICE_PAD_X: f32 = 10.0;
+const SERVICE_PAD_Y: f32 = 4.0;
 /// Telegram allows at most 10 items in one album.
 const MAX_ALBUM: usize = 10;
 
@@ -251,7 +255,9 @@ impl Feed {
         let date = previous.is_none_or(|p| clock::day(p.date) != day);
         // One sender within ten minutes on one day is drawn as a run of bubbles.
         let run = |a: &Message, b: &Message| {
-            a.outgoing == b.outgoing
+            !a.service
+                && !b.service
+                && a.outgoing == b.outgoing
                 && a.sender_id == b.sender_id
                 && (b.date - a.date).abs() < 600
                 && clock::day(a.date) == clock::day(b.date)
@@ -420,6 +426,12 @@ impl Feed {
         let scale = self.scale.get().clamp(0.5, 4.0);
         let max_width = self.width.get().clamp(80.0, 504.0);
         let (first, last) = (&group[0], &group[group.len() - 1]);
+        if first.service {
+            return (
+                self.render_service(first, context, scale, max_width),
+                Vec::new(),
+            );
+        }
         let round = matches!(first.attachment, Some(tg_core::Attachment::Round(_)));
         let sticker = matches!(
             first.attachment,
@@ -664,6 +676,7 @@ impl Feed {
         }
         let permissions = first.permissions.unwrap_or_default();
         let mut row = MessageRow {
+            service: false,
             attachment_y,
             round,
             emoji: matches!(first.attachment, Some(tg_core::Attachment::Emoji(_))),
@@ -738,6 +751,53 @@ impl Feed {
         };
         crate::attachments::decorate(&mut row, first, self.audio.get());
         (row, cells)
+    }
+    /// A centred translucent pill ("Anna joined the group"), without a bubble, time or menu.
+    fn render_service(
+        &self,
+        message: &Message,
+        context: &Context,
+        scale: f32,
+        max_width: f32,
+    ) -> MessageRow {
+        // Rendered at a smaller scale and shown 1:1 in device pixels: crisp 13 px text.
+        let small = scale * SERVICE_TEXT;
+        let available = (max_width - 2.0 * SERVICE_PAD_X).max(1.0);
+        let text = self
+            .engine
+            .borrow_mut()
+            .render(message, small, available * small);
+        let (text_width, text_height) = (text.width as f32 / scale, text.height as f32 / scale);
+        let bubble_y =
+            if context.date { DATE } else { 0.0 } + if context.unread { 32.0 } else { 0.0 } + GAP;
+        let bubble_height = text_height + 2.0 * SERVICE_PAD_Y;
+        MessageRow {
+            key: message.id.0.to_string().into(),
+            service: true,
+            unread: context.unread,
+            unread_y: if context.date { DATE } else { 0.0 },
+            date: if context.date {
+                clock::day_label(message.date).into()
+            } else {
+                Default::default()
+            },
+            height: bubble_y + bubble_height + if context.last { 10.0 } else { 0.0 },
+            bubble_y,
+            bubble_width: text_width + 2.0 * SERVICE_PAD_X,
+            bubble_height,
+            rendered: Image::from_rgba8_premultiplied(
+                SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                    &text.pixels,
+                    text.width,
+                    text.height,
+                ),
+            ),
+            text_y: SERVICE_PAD_Y,
+            text_width,
+            text_height,
+            cells: ModelRc::new(VecModel::from(Vec::<PhotoCell>::new())),
+            ..Default::default()
+        }
     }
     fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
         if messages[range.start].album == 0 || range.len() == MAX_ALBUM {
@@ -966,6 +1026,7 @@ mod feed_tests {
             forwarded: None,
             edited: false,
             is_text: true,
+            service: false,
             permissions: None,
             video: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
@@ -1248,6 +1309,7 @@ mod action_tests {
             forwarded: None,
             edited: false,
             is_text: false,
+            service: false,
             permissions: None,
             id: MessageId(n * 1048576),
             chat: ChatId(7),
