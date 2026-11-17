@@ -105,6 +105,26 @@ pub(crate) fn plain_directory(path: PathBuf) -> PathBuf {
         path
     }
 }
+/// The interface scale file: a plain percentage, not secret, next to the TDLib data.
+const SCALE_FILE: &str = "interface-scale";
+/// The stored interface scale; a missing or unreadable file means auto.
+pub(crate) fn interface_scale(directory: &Path) -> u16 {
+    let Ok(file) = File::open(directory.join(SCALE_FILE)) else {
+        return tg_core::SCALE_AUTO;
+    };
+    let mut text = String::new();
+    if file.take(16).read_to_string(&mut text).is_err() {
+        return tg_core::SCALE_AUTO;
+    }
+    tg_core::parse_scale(&text)
+}
+/// Stores the interface scale through a temporary file, so a crash never leaves half a value.
+pub(crate) fn save_interface_scale(directory: &Path, value: u16) -> std::io::Result<()> {
+    let target = directory.join(SCALE_FILE);
+    let temporary = directory.join(format!("{SCALE_FILE}.tmp"));
+    std::fs::write(&temporary, tg_core::check_scale(value).to_string())?;
+    std::fs::rename(&temporary, &target)
+}
 pub(crate) fn emoji_font(directory: Option<&Path>) -> Result<Option<Vec<u8>>, &'static str> {
     if let Some(path) = std::env::var_os("TG_EMOJI_FONT") {
         return read_font(Path::new(&path)).map(Some);
@@ -147,6 +167,22 @@ fn read_font(path: &Path) -> Result<Vec<u8>, &'static str> {
         return Err("Emoji font exceeds the 32 MiB limit");
     }
     Ok(bytes)
+}
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+    #[test]
+    fn interface_scale_round_trips_and_defaults_to_auto() {
+        let directory =
+            std::env::temp_dir().join(format!("ferrogram-scale-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        assert_eq!(interface_scale(&directory), tg_core::SCALE_AUTO);
+        save_interface_scale(&directory, 120).unwrap();
+        assert_eq!(interface_scale(&directory), 120);
+        std::fs::write(directory.join(SCALE_FILE), "garbage that is far too long").unwrap();
+        assert_eq!(interface_scale(&directory), tg_core::SCALE_AUTO);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 }
 #[cfg(test)]
 mod tests {

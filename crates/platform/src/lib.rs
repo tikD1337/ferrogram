@@ -13,6 +13,9 @@ mod byte_stream;
 mod files_ffi;
 #[allow(unsafe_code)]
 mod round_frames;
+#[allow(unsafe_code)]
+mod scale;
+pub use scale::set_interface_scale;
 mod streaming;
 mod video;
 #[allow(unsafe_code)]

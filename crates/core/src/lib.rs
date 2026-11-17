@@ -29,6 +29,11 @@ pub use attention::{Notification, ReadBatches};
 mod video;
 pub use video::{RoundFrame, RoundPixels, Video, VideoRect, VideoRequest, VideoState};
 
+mod scale;
+pub use scale::{
+    SCALE_AUTO, SCALE_MAX, SCALE_MIN, SCALE_STEP, check_scale, parse_scale, scale_factor,
+};
+
 mod streaming;
 pub use streaming::{
     LoadedRanges, MAX_LOADED_RANGES, STREAM_AHEAD_SECONDS, STREAM_PART, STREAM_PRELOAD, StreamFile,

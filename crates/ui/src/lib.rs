@@ -7,6 +7,7 @@ mod clock;
 mod history;
 mod media;
 mod models;
+mod scale;
 mod streaming;
 mod text;
 mod viewport;
@@ -52,6 +53,8 @@ pub struct Options {
     pub check: Option<PathBuf>,
     /// Loaded off-thread by tg-app. At most 32 MiB, never bundled.
     pub emoji_font: Option<Vec<u8>>,
+    /// The stored interface scale (`tg_core::SCALE_AUTO` or a percentage), shown in its dialog.
+    pub interface_scale: u16,
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
 type VideoFn = Box<dyn Fn(VideoRequest) -> Result<(), CommandError>>;
@@ -81,6 +84,9 @@ struct State {
     // Seek the actual oldest edge for an entirely unread chat (TDLib has no oldest sentinel).
     seek_start: Cell<bool>,
     demo_stickers: Cell<bool>,
+    /// Stores a new interface scale; set by tg-app with `Ui::on_interface_scale`.
+    scale: RefCell<Option<scale::ScaleFn>>,
+    scale_applied: Cell<u16>,
 }
 impl State {
     /// Physical-pixel area of the media viewer above its control bar.
@@ -938,9 +944,12 @@ impl Ui {
             total_unread: Cell::new(None),
             seek_start: Cell::new(false),
             demo_stickers: Cell::new(options.demo_stickers),
+            scale: RefCell::new(None),
+            scale_applied: Cell::new(tg_core::check_scale(options.interface_scale)),
         });
         actions::bind(&window, &state);
         attachments::bind(&window, &state);
+        scale::bind(&window, &state);
         let weak = window.as_weak();
         let s = state.clone();
         window.on_media_ready(move || {
@@ -1231,6 +1240,11 @@ impl Ui {
     }
     pub fn on_video(&self, handler: impl Fn(VideoRequest) -> Result<(), CommandError> + 'static) {
         *self.state.video.borrow_mut() = Box::new(handler);
+    }
+    /// Stores a newly chosen interface scale. After it returns `Ok`, `run` returns so the
+    /// caller can restart the client; without a handler the dialog only closes.
+    pub fn on_interface_scale(&self, handler: impl Fn(u16) -> Result<(), CommandError> + 'static) {
+        *self.state.scale.borrow_mut() = Some(Box::new(handler));
     }
     pub fn event_sink(&self) -> EventSink {
         self.sink.clone()
