@@ -1,5 +1,7 @@
-# Runs the project checks on every push to main and on every pull request.
-# Tests that need a real TPM or an installed TDLib are #[ignore]d and do not run here.
+# Runs on every push to main and on every pull request. Each stage is a separate check, so a
+# failure names what broke: lint, unit tests, the release build, then one check per smoke
+# scenario of the real client (scripts/smoke.ps1). Tests that need a real TPM or an installed
+# TDLib are #[ignore]d and do not run here.
 name: CI
 
 on:
@@ -19,47 +21,90 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  checks:
-    name: fmt, clippy, test, build
+  lint:
+    name: Lint (fmt, clippy)
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       # rust-toolchain.toml pins the version; rustup installs it with rustfmt and clippy.
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
-
       - name: Cache Cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
       - name: Formatting
         run: cargo fmt --all -- --check
-
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  test:
+    name: Unit tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Tests
         run: cargo test --workspace --locked
 
+  build:
+    name: Release build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Release build
         run: cargo build --release -p tg-app --locked
-
-      - name: Demo smoke test
-        shell: pwsh
-        run: |
-          # Renders the demo without an account and saves a snapshot; fails if the window cannot start.
-          # A GUI-subsystem executable: PowerShell would not wait for it without -Wait.
-          $demo = Start-Process -FilePath ./target/release/ferrogram.exe -ArgumentList '--demo', '--snapshot', 'demo.png' -NoNewWindow -Wait -PassThru
-          if ($demo.ExitCode -ne 0) { exit $demo.ExitCode }
-          if (-not (Test-Path demo.png)) { throw 'The demo did not produce a snapshot.' }
-
-      - name: Upload the demo snapshot
+      - name: Keep the executable for the smoke checks
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: demo-snapshot
-          path: demo.png
+          name: ferrogram-exe
+          path: target/release/ferrogram.exe
+          retention-days: 3
+
+  smoke:
+    name: Smoke (${{ matrix.scenario }})
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [demo, video, voice, round, stickers, scroll, oled, recovery]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the executable
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ferrogram-exe
+          path: bin
+      - name: Run the scenario
+        shell: powershell
+        run: ./scripts/smoke.ps1 -Exe bin/ferrogram.exe -Scenario ${{ matrix.scenario }} -Out smoke
+      - name: Upload the report and snapshot
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-${{ matrix.scenario }}
+          path: smoke
           retention-days: 7
+          if-no-files-found: ignore

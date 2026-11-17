@@ -178,14 +178,32 @@ Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHIT
 <details>
 <summary><b>🛠️ Development checks</b></summary>
 
-Every push to `main` and every pull request runs these checks on Windows in
-[GitHub Actions](https://github.com/tikD1337/ferrogram/actions), plus a release build and a
-demo smoke test. Tests that need a real TPM or an installed TDLib are skipped there.
+Before pushing, run the quick smoke test. It builds the debug client and checks, in about half a
+minute, that the real client works end to end:
+- the demo starts and loads chats and messages;
+- a video and a voice message really play (they reach 1.5 s);
+- other programs cannot read the client's memory;
+- a refused key shows the recovery screen.
+
+```powershell
+.\scripts\smoke.ps1          # quick: demo, video, voice, recovery
+.\scripts\smoke.ps1 -Full    # everything CI runs, about a minute
+```
+
+Every push to `main` and every pull request runs separate checks in
+[GitHub Actions](https://github.com/tikD1337/ferrogram/actions):
+1. Lint (`cargo fmt`, `clippy -D warnings`).
+2. Unit tests.
+3. The release build.
+4. One smoke check per scenario: demo, video, voice, round, stickers, scroll (memory stays
+   bounded), oled and recovery.
+
+Each smoke check uploads its report and snapshot. Tests that need a real TPM or an installed TDLib
+are skipped there.
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo check --workspace
 cargo test --workspace
 ```
 

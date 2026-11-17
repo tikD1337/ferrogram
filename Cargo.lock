@@ -4401,6 +4401,7 @@ dependencies = [
  "parley",
  "qrcode",
  "raw-window-handle",
+ "serde_json",
  "slint",
  "slint-build",
  "swash",

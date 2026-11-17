@@ -38,7 +38,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = options::Options::parse(std::env::args().skip(1))?;
     if options.help {
         println!(
-            "ferrogram [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-round <seconds>] [--demo-stickers]\n--demo runs synthetic conversations without TDLib, credentials or key files."
+            "ferrogram [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-round <seconds>] [--demo-stickers] [--demo-video <seconds>] [--check <json>]\n--demo runs synthetic conversations without TDLib, credentials or key files."
         );
         return Ok(());
     }
@@ -66,6 +66,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 demo_voice: options.demo_voice,
                 demo_round: options.demo_round,
                 demo_stickers: options.demo_stickers,
+                check: options.check.clone(),
             },
             move |command| commands.borrow_mut().command(command),
         )?;
@@ -108,6 +109,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             demo_voice: None,
             demo_round: None,
             demo_stickers: false,
+            check: options.check.clone(),
         },
         move |command| {
             // Recovery choices go to the lifecycle worker; the engine is not running then.
