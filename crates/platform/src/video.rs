@@ -14,6 +14,8 @@ use crate::video_ffi::{Backdrop, ChildWindow, Message, Report, run};
 pub struct Player {
     sender: mpsc::SyncSender<Message>,
     audio: Cell<bool>,
+    surface: std::sync::Arc<crate::round_frames::Surface>,
+    stream: RefCell<Option<std::sync::Arc<crate::streaming::Reader>>>,
     window: RefCell<Option<ChildWindow>>,
     backdrop: RefCell<Option<Backdrop>>,
     report: Report,
@@ -26,9 +28,23 @@ impl std::fmt::Debug for Player {
     }
 }
 
+/// Whether the player's video window under the main window `parent` is visible with a
+/// non-empty clip region; `None` when no video window exists. For reference checks only.
+pub fn video_window_shown(parent: isize) -> Option<bool> {
+    crate::video_ffi::video_window_shown(parent)
+}
+
 impl Player {
     /// `report` runs on the player thread for every state change.
     pub fn start(report: impl Fn(VideoState) + Send + Sync + 'static) -> Result<Self, Error> {
+        Self::start_with_frames(report, |_| {})
+    }
+
+    /// Reports latest round frames separately from clock/state events.
+    pub fn start_with_frames(
+        report: impl Fn(VideoState) + Send + Sync + 'static,
+        frames: impl Fn(tg_core::RoundFrame) + Send + 'static,
+    ) -> Result<Self, Error> {
         let report: Report = std::sync::Arc::new(report);
         let worker = report.clone();
         // At most 64 queued requests and engine events; time updates beyond that are dropped.
@@ -43,6 +59,7 @@ impl Player {
                     events,
                     Box::new(move |state| worker(state)),
                     ready,
+                    Box::new(frames),
                 )
             })
             .map_err(|_| Error("video worker startup", 0))?;
@@ -50,6 +67,8 @@ impl Player {
             Ok(Ok(())) => Ok(Self {
                 sender,
                 audio: Cell::new(false),
+                surface: Default::default(),
+                stream: RefCell::new(None),
                 window: RefCell::new(None),
                 backdrop: RefCell::new(None),
                 report,
@@ -74,6 +93,44 @@ impl Player {
                 .map_err(|_| Error("video queue", 0))
         };
         match request {
+            VideoRequest::Availability { file, token } => {
+                if let Some(stream) = self.stream.borrow().as_ref()
+                    && stream.file == file.id
+                    && stream.token == token
+                {
+                    stream.update(file);
+                }
+                Ok(())
+            }
+            VideoRequest::OpenStream {
+                file,
+                window,
+                rect,
+                token,
+            } => {
+                self.close();
+                let child = ChildWindow::create(window, rect)?;
+                let handle = child.handle();
+                *self.window.borrow_mut() = Some(child);
+                let report = self.report.clone();
+                let reader = crate::streaming::Reader::new(
+                    file,
+                    token,
+                    std::sync::Arc::new(move |s| {
+                        report(VideoState {
+                            stream: Some(s),
+                            ..Default::default()
+                        });
+                    }),
+                );
+                *self.stream.borrow_mut() = Some(reader.clone());
+                queued(Message::OpenStream {
+                    reader,
+                    window: handle,
+                    width: rect.width,
+                    height: rect.height,
+                })
+            }
             VideoRequest::Open { path, window, rect } => {
                 self.close();
                 let child = ChildWindow::create(window, rect)?;
@@ -87,29 +144,18 @@ impl Player {
                     token: None,
                 })
             }
-            VideoRequest::OpenRound {
-                path,
-                window,
-                rect,
-                viewport,
-                token,
-            } => {
+            VideoRequest::OpenRound { path, size, token } => {
                 self.close();
-                let child = ChildWindow::create(window, rect)?;
-                child.round(viewport)?;
-                let handle = child.handle();
-                *self.window.borrow_mut() = Some(child);
-                queued(Message::Open {
-                    path,
-                    window: handle,
-                    width: rect.width,
-                    height: rect.height,
-                    token: Some(token),
-                })
+                queued(Message::OpenRound { path, size, token })?;
+                self.audio.set(true);
+                Ok(())
             }
-            VideoRequest::RoundViewport(viewport) => {
-                if let Some(child) = self.window.borrow().as_ref() {
-                    child.round(viewport)?;
+            VideoRequest::RoundSurface { size, visible } => {
+                if self.surface.update(size, visible)?
+                    && let Err(error) = queued(Message::RoundSurface(self.surface.clone()))
+                {
+                    self.surface.take();
+                    return Err(error);
                 }
                 Ok(())
             }
@@ -150,6 +196,9 @@ impl Player {
     }
 
     fn close(&self) {
+        if let Some(stream) = self.stream.borrow_mut().take() {
+            stream.close();
+        }
         let child = self.window.borrow_mut().take();
         if !self.audio.replace(false) && child.is_none() {
             return;

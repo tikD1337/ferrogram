@@ -2,10 +2,13 @@
 use super::*;
 use slint::{ModelRc, VecModel};
 use tg_core::{Attachment, ChatId, FileRequest, MediaFile, Message, VideoState};
+#[path = "round.rs"]
+mod round;
 type FileHandler = Box<dyn Fn(FileRequest) -> Result<(), CommandError>>;
 #[derive(Default)]
 pub(super) struct Attachments {
     voice: RefCell<Option<VoicePlayback>>,
+    dock: RefCell<round::Dock>,
     next_token: Cell<u64>,
     confirm: RefCell<Option<PathBuf>>,
     pub files: RefCell<Option<FileHandler>>,
@@ -29,6 +32,7 @@ pub(super) fn decorate(
         Some(Attachment::Round(round)) => {
             let state = audio.filter(|(id, _)| *id == message.id).map(|(_, s)| s);
             row.voice_playing = state.is_some_and(|s| s.playing);
+            row.round_active = state.is_some();
             row.voice_unlistened = !round.viewed;
             row.voice_time = state
                 .map_or_else(
@@ -48,12 +52,17 @@ pub(super) fn decorate(
             } else {
                 (round.file.downloaded as f64 / round.file.size as f64).clamp(0.02, 0.999)
             };
+            let fraction = state.map_or(fraction, |s| {
+                (f64::from(s.position_ms) / f64::from(s.duration_ms.max(1))).clamp(0.0, 0.999)
+            });
+            let radius = if state.is_some() { 50.0 } else { 48.0 };
             let angle = fraction * std::f64::consts::TAU;
             row.round_progress = format!(
-                "M50 2 A48 48 0 {} 1 {:.3} {:.3}",
+                "M50 {} A{radius} {radius} 0 {} 1 {:.3} {:.3}",
+                50.0 - radius,
                 i32::from(fraction > 0.5),
-                50.0 + 48.0 * angle.sin(),
-                50.0 - 48.0 * angle.cos()
+                50.0 + radius * angle.sin(),
+                50.0 - radius * angle.cos()
             )
             .into();
             row.file_progress = if round.file.downloading {
@@ -142,13 +151,16 @@ impl State {
     pub(super) fn stop_voice(&self, w: &AppWindow) {
         let current = self.attachments.voice.borrow_mut().take();
         if let Some(current) = current {
+            if current.round {
+                self.clear_round(w);
+            }
             self.video(w, VideoRequest::Close);
             if current.file.path.is_none() {
                 self.set_download_state(current.message, false);
                 self.send(w, Command::CancelDownload(current.file.id));
             }
             self.feed.audio.set(None);
-            self.feed.notify.reset();
+            self.feed.notify_message(current.message);
         }
     }
     pub(super) fn voice_state(&self, w: &AppWindow, state: VideoState) {
@@ -159,7 +171,7 @@ impl State {
         if state.audio_token != Some(voice.token) {
             return;
         }
-        let (chat, id) = (voice.chat, voice.message);
+        let (chat, id, round) = (voice.chat, voice.message, voice.round);
         let seek = if state.duration_ms > 0 {
             voice.seek.take()
         } else {
@@ -170,13 +182,22 @@ impl State {
             voice.opened = true;
         }
         drop(current);
-        self.feed.audio.set(Some((id, state)));
-        self.feed.notify.reset();
+        self.feed
+            .audio
+            .set((!round || self.chats.selected.get() == Some(chat)).then_some((id, state)));
+        if round {
+            self.round_state(w, state);
+        }
+        // Every player event lands here, several per second: redraw only this row.
+        self.feed.notify_message(id);
         if let Some(fraction) = seek {
             self.video(w, VideoRequest::Seek(fraction));
         }
         if mark_listened {
             self.send(w, Command::OpenMessageContent { chat, message: id });
+        }
+        if round && state.ended {
+            self.stop_voice(w);
         }
         if state.failed {
             w.set_error("This message cannot be played.".into());
@@ -198,7 +219,16 @@ impl State {
             .borrow()
             .as_ref()
             .is_some_and(|v| v.chat == message.chat && v.message == message.id);
-        if same && file.path.is_none() {
+        // A returned/evicted round row may have fresh file metadata while its engine
+        // already owns the complete file. Keep a click as pause in that case.
+        let round_started = round
+            && self
+                .attachments
+                .voice
+                .borrow()
+                .as_ref()
+                .is_some_and(|v| v.placed.is_some());
+        if same && file.path.is_none() && !round_started {
             self.stop_voice(w);
             return;
         }
@@ -242,7 +272,7 @@ impl State {
         } else {
             self.set_download_state(message.id, true);
         }
-        self.feed.notify.reset();
+        self.feed.notify_message(message.id);
     }
     pub(super) fn attachment_click(&self, w: &AppWindow, key: &str, action: i32, fraction: f32) {
         let Ok(id) = key.parse::<i64>().map(MessageId) else {
@@ -281,11 +311,9 @@ impl State {
                 } else if document.file.downloading {
                     if self.send(w, Command::CancelDownload(document.file.id)) {
                         self.set_download_state(message.id, false);
-                        self.refresh(w);
                     }
                 } else if self.send(w, Command::DownloadFileUrgent(document.file.id)) {
                     self.set_download_state(message.id, true);
-                    self.refresh(w);
                 }
             }
             _ => {}
@@ -307,7 +335,7 @@ impl State {
                 _ => {}
             }
         }
-        self.feed.invalidate_message(id);
+        self.feed.notify_message(id);
     }
     fn file_request(&self, w: &AppWindow, request: FileRequest) {
         let result = self.attachments.files.borrow().as_ref().map_or_else(
@@ -380,101 +408,22 @@ impl State {
         if let Some((path, token, round)) = ready {
             self.start_attachment_player(w, path, token, round);
         }
-        if !changed.is_empty() {
-            // Progress/path changes do not alter row geometry: keep caption rasters and anchors.
-            self.feed.notify.reset();
+        // Progress/path changes do not alter row geometry: keep caption rasters and anchors.
+        for id in changed {
+            self.feed.notify_message(id);
         }
-    }
-    fn round_rect(&self, w: &AppWindow, id: MessageId) -> Option<(VideoRect, VideoRect)> {
-        use slint::Model;
-        let row = (0..self.feed.row_count())
-            .filter_map(|i| self.feed.row_data(i))
-            .find(|r| r.round && r.key == id.0.to_string())?;
-        let x = w.get_feed_left()
-            + if row.outgoing {
-                w.get_feed_view_width() - row.bubble_width - 14.0
-            } else {
-                14.0
-            };
-        let y = w.get_feed_top()
-            + row.row_y
-            + w.get_feed_y()
-            + (w.get_feed_height() - w.get_feed_content_height()).max(0.0)
-            + row.bubble_y
-            + row.media_y;
-        let scale = w.window().scale_factor();
-        let rect = VideoRect {
-            x: (x * scale).round() as i32,
-            y: (y * scale).round() as i32,
-            width: (row.media_width * scale).round() as i32,
-            height: (row.media_height * scale).round() as i32,
-        };
-        let viewport = VideoRect {
-            x: (w.get_feed_left() * scale).round() as i32,
-            y: (w.get_feed_top() * scale).round() as i32,
-            width: (w.get_feed_view_width() * scale).round() as i32,
-            height: (w.get_feed_height() * scale).round() as i32,
-        };
-        (rect.y < viewport.y + viewport.height && rect.y + rect.height > viewport.y)
-            .then_some((rect, viewport))
     }
     fn start_attachment_player(&self, w: &AppWindow, path: PathBuf, token: u64, round: bool) {
-        if !round {
-            self.video(w, VideoRequest::OpenAudio { path, token });
-            return;
-        }
-        let id = self.attachments.voice.borrow().as_ref().map(|v| v.message);
-        if let Some((rect, viewport)) = id.and_then(|id| self.round_rect(w, id))
-            && let Some(window) = native_window(w.window())
-        {
-            if let Some(active) = self.attachments.voice.borrow_mut().as_mut() {
-                active.placed = Some((rect, viewport));
-            }
-            self.video(
-                w,
-                VideoRequest::OpenRound {
-                    path,
-                    window,
-                    rect,
-                    viewport,
-                    token,
-                },
-            );
+        if round {
+            self.start_round(w, path, token);
         } else {
-            self.stop_voice(w);
-        }
-    }
-    pub(super) fn sync_round(&self, w: &AppWindow) {
-        let active = self
-            .attachments
-            .voice
-            .borrow()
-            .as_ref()
-            .filter(|v| v.round)
-            .map(|v| (v.message, v.placed));
-        let Some((id, placed)) = active else {
-            return;
-        };
-        if w.get_menu_open() || w.get_action_dialog() != 0 {
-            self.stop_voice(w);
-            return;
-        }
-        let Some((rect, viewport)) = self.round_rect(w, id) else {
-            self.stop_voice(w);
-            return;
-        };
-        if placed.is_some() && placed != Some((rect, viewport)) {
-            if let Some(v) = self.attachments.voice.borrow_mut().as_mut() {
-                v.placed = Some((rect, viewport));
-            }
-            self.video(w, VideoRequest::RoundViewport(viewport));
-            self.video(w, VideoRequest::Move(rect));
+            self.video(w, VideoRequest::OpenAudio { path, token });
         }
     }
     pub(super) fn clear_file_confirmation(&self) {
         self.attachments.confirm.borrow_mut().take();
     }
-    pub(super) fn content_opened(&self, w: &AppWindow, chat: ChatId, id: MessageId) {
+    pub(super) fn content_opened(&self, chat: ChatId, id: MessageId) {
         if let Some(m) = self
             .feed
             .history
@@ -489,8 +438,7 @@ impl State {
                 _ => {}
             }
         }
-        self.feed.invalidate_message(id);
-        self.refresh(w);
+        self.feed.notify_message(id);
     }
 }
 pub(super) fn bind(w: &AppWindow, state: &Rc<State>) {
@@ -499,6 +447,29 @@ pub(super) fn bind(w: &AppWindow, state: &Rc<State>) {
     w.on_attachment_action(move |key, action, fraction| {
         if let Some(w) = weak.upgrade() {
             s.attachment_click(&w, &key, action, fraction);
+        }
+    });
+    let weak = w.as_weak();
+    let s = state.clone();
+    w.on_round_scale({
+        let weak = w.as_weak();
+        let state = state.clone();
+        move |growth| {
+            if let Some(w) = weak.upgrade() {
+                state.round_scale(&w, growth);
+            }
+        }
+    });
+    w.on_round_pointer(move |phase, x, y| {
+        if let Some(w) = weak.upgrade() {
+            s.round_pointer(&w, phase, x, y);
+        }
+    });
+    let weak = w.as_weak();
+    let s = state.clone();
+    w.on_round_return(move || {
+        if let Some(w) = weak.upgrade() {
+            s.return_round(&w);
         }
     });
     let weak = w.as_weak();

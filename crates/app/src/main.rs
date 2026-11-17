@@ -67,6 +67,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 demo_round: options.demo_round,
                 demo_stickers: options.demo_stickers,
                 check: options.check.clone(),
+                // Demo keeps the system scale so its snapshots stay comparable.
+                interface_scale: tg_core::SCALE_AUTO,
             },
             move |command| commands.borrow_mut().command(command),
         )?;
@@ -83,16 +85,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return result;
     }
     // Pre-window configuration reads are also off the UI thread. No keys or native engine yet.
-    let (credentials, directory, font) = std::thread::spawn(|| {
+    let (credentials, directory, font, scale) = std::thread::spawn(|| {
         let credentials = config::credentials()?;
         let directory = config::plain_directory(
             tg_security::data_dir().map_err(|_| "Invalid application data directory")?,
         );
         let font = config::emoji_font(Some(&directory))?;
-        Ok::<_, &'static str>((credentials, directory, font))
+        let scale = config::interface_scale(&directory);
+        Ok::<_, &'static str>((credentials, directory, font, scale))
     })
     .join()
     .map_err(|_| "Configuration worker failed")??;
+    // The worker has ended and nothing else runs yet: the toolkit reads this with its first window.
+    if let Some(factor) = tg_core::scale_factor(scale) {
+        tg_platform::set_interface_scale(factor);
+    }
     let engine: Arc<Mutex<Option<Engine>>> = Arc::default();
     let dispatch = engine.clone();
     // The lifecycle worker owns the receiver: the close token and the recovery choices.
@@ -110,6 +117,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             demo_round: None,
             demo_stickers: false,
             check: options.check.clone(),
+            interface_scale: scale,
         },
         move |command| {
             // Recovery choices go to the lifecycle worker; the engine is not running then.
@@ -134,6 +142,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let notifications = attach_notifications(&ui);
     let player = attach_video(&ui);
     let _files = files::attach(&ui);
+    // A new interface scale is stored now and applied by a restart after a clean shutdown.
+    let restart = Rc::new(std::cell::Cell::new(false));
+    let requested = restart.clone();
+    let scale_directory = directory.clone();
+    ui.on_interface_scale(move |value| {
+        config::save_interface_scale(&scale_directory, value)
+            .map_err(|_| failure("Could not save the interface scale."))?;
+        requested.set(true);
+        Ok(())
+    });
     let sink = ui.event_sink();
     // Authorization can arrive before Engine::start returns. Hold delivery until
     // the handle is installed, otherwise the UI's default QR request can race it.
@@ -150,6 +168,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = worker.join().map_err(|_| "Lifecycle worker failed")?;
     result?;
     shutdown?;
+    // Only after TDLib has closed its database, so the new process can open it.
+    if restart.get() {
+        let exe = std::env::current_exe().map_err(|_| "Could not find Ferrogram to restart it")?;
+        std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .spawn()
+            .map_err(|_| "Could not restart Ferrogram")?;
+    }
     Ok(())
 }
 /// Messages to the lifecycle worker.
@@ -280,8 +306,13 @@ fn attach_notifications(ui: &Ui) -> Option<Arc<tg_platform::Notifications>> {
 /// the player reports that playback is unavailable.
 fn attach_video(ui: &Ui) -> Option<Rc<tg_platform::Player>> {
     let events = ui.event_sink();
+    let frames = events.clone();
     let player = Rc::new(
-        tg_platform::Player::start(move |state| events.post(Event::VideoState(state))).ok()?,
+        tg_platform::Player::start_with_frames(
+            move |state| events.post(Event::VideoState(state)),
+            move |frame| frames.post(Event::RoundFrame(frame)),
+        )
+        .ok()?,
     );
     let requests = player.clone();
     ui.on_video(move |request| {

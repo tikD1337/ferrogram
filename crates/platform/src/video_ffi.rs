@@ -1,6 +1,4 @@
-//! Media Foundation Media Engine in rendering mode: the engine decodes (on the GPU when the
-//! driver offers it), plays the audio and presents the frames into a child window of the main
-//! window. No video frame is copied back to the CPU or into the UI toolkit.
+//! Media Foundation playback on one MTA: native viewer, audio-only voices, frame-server rounds.
 use std::{path::Path, sync::mpsc};
 
 use windows::Win32::Foundation::RECT;
@@ -32,6 +30,13 @@ use crate::Error;
 
 /// Messages for the player thread: requests from the UI and engine events.
 pub(crate) enum Message {
+    OpenStream {
+        reader: std::sync::Arc<crate::streaming::Reader>,
+        window: isize,
+        width: i32,
+        height: i32,
+    },
+
     Open {
         path: std::path::PathBuf,
         window: isize,
@@ -39,6 +44,12 @@ pub(crate) enum Message {
         height: i32,
         token: Option<u64>,
     },
+    OpenRound {
+        path: std::path::PathBuf,
+        size: u32,
+        token: u64,
+    },
+    RoundSurface(std::sync::Arc<crate::round_frames::Surface>),
     OpenAudio {
         path: std::path::PathBuf,
         token: u64,
@@ -51,25 +62,40 @@ pub(crate) enum Message {
     Seek(f64),
     /// The acknowledgement lets the UI thread destroy the window only after the engine stopped.
     Close(mpsc::SyncSender<()>),
-    Event(u32),
+    // Keep the emitting engine identity: cancelled reads may post a late native callback.
+    Event {
+        event: u32,
+        generation: u64,
+    },
     Quit,
 }
 
 #[implement(IMFMediaEngineNotify)]
 struct Notify {
+    generation: u64,
     sender: mpsc::SyncSender<Message>,
 }
 
 impl IMFMediaEngineNotify_Impl for Notify_Impl {
     fn EventNotify(&self, event: u32, _param1: usize, _param2: u32) -> windows::core::Result<()> {
         // Bounded queue: a dropped time update is replaced by the next one.
-        let _ = self.sender.try_send(Message::Event(event));
+        let _ = self.sender.try_send(Message::Event {
+            event,
+            generation: self.generation,
+        });
         Ok(())
     }
 }
 
 struct Engine {
+    frames: Option<crate::round_frames::Frames>,
     audio_token: Option<u64>,
+    stream: Option<crate::byte_stream::Source>,
+    stream_token: Option<u64>,
+    pending_seek: std::cell::Cell<Option<f64>>,
+    buffering: std::cell::Cell<bool>,
+    seek_wait: std::cell::Cell<bool>,
+    play_intent: std::cell::Cell<bool>,
     engine: IMFMediaEngine,
     extended: Option<IMFMediaEngineEx>,
 }
@@ -80,6 +106,16 @@ impl Engine {
         path: &Path,
         window: isize,
         audio_token: Option<u64>,
+    ) -> windows::core::Result<Self> {
+        Self::open_source(notify, path, window, audio_token, None, None)
+    }
+    fn open_source(
+        notify: &IMFMediaEngineNotify,
+        path: &Path,
+        window: isize,
+        audio_token: Option<u64>,
+        reader: Option<std::sync::Arc<crate::streaming::Reader>>,
+        frames: Option<crate::round_frames::Frames>,
     ) -> windows::core::Result<Self> {
         // SAFETY: COM calls on this thread, which initialized COM (MTA) and Media Foundation.
         // `window` is a live owned child until Close is acknowledged, or zero for audio-only mode.
@@ -93,13 +129,24 @@ impl Engine {
             if window != 0 {
                 attributes.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, window as u64)?;
             }
-            let flags = if window == 0 {
+            if let Some(frames) = &frames {
+                frames.attributes(&attributes)?;
+            }
+            let flags = if window == 0 && frames.is_none() {
                 windows::Win32::Media::MediaFoundation::MF_MEDIA_ENGINE_AUDIOONLY.0 as u32
             } else {
                 0
             };
             let engine = factory.CreateInstance(flags, &attributes)?;
-            engine.SetSource(&BSTR::from(path.as_os_str().to_string_lossy().as_ref()))?;
+            let stream_token = reader.as_ref().map(|r| r.token);
+            let stream = reader.map(crate::byte_stream::Source::new).transpose()?;
+            if let Some(source) = &stream {
+                engine
+                    .cast::<IMFMediaEngineEx>()?
+                    .SetSourceFromByteStream(&source.stream, &BSTR::from("video.mp4"))?;
+            } else {
+                engine.SetSource(&BSTR::from(path.as_os_str().to_string_lossy().as_ref()))?;
+            }
             engine.Play()?;
             let extended = if window != 0 {
                 engine.cast::<IMFMediaEngineEx>().ok()
@@ -107,6 +154,13 @@ impl Engine {
                 None
             };
             Ok(Self {
+                frames,
+                stream,
+                stream_token,
+                pending_seek: std::cell::Cell::new(None),
+                buffering: std::cell::Cell::new(stream_token.is_some()),
+                seek_wait: std::cell::Cell::new(false),
+                play_intent: std::cell::Cell::new(true),
                 engine,
                 extended,
                 audio_token,
@@ -159,6 +213,18 @@ impl Engine {
     }
 
     fn state(&self, event: u32) -> tg_core::VideoState {
+        match event {
+            17 if self.stream.is_some() && self.seek_wait.replace(false) => {
+                self.buffering.set(false);
+                if self.play_intent.get() {
+                    // SAFETY: resume on the owning MTA only after the paused seek is ready.
+                    let _ = unsafe { self.engine.Play() };
+                }
+            }
+            12 | 1005 => self.buffering.set(true),
+            5 | 11 | 13 | 14 | 19 | 1006 | 1009 => self.buffering.set(false),
+            _ => {}
+        }
         // SAFETY: read-only property calls on the engine owned by this thread.
         let (position, duration, paused, ended) = unsafe {
             (
@@ -176,17 +242,41 @@ impl Engine {
             }
         };
         tg_core::VideoState {
+            stream: None,
+            stream_token: self.stream_token,
+            buffering: self.buffering.get() || self.seek_wait.get(),
+            first_frame: event == 1009,
             audio_token: self.audio_token,
             position_ms: ms(position),
             duration_ms: ms(duration),
-            playing: !paused && !ended,
+            playing: !ended
+                && if self.stream.is_some() {
+                    self.play_intent.get()
+                } else {
+                    !paused
+                },
             ended,
-            failed: event == ERROR_EVENT,
+            failed: event == ERROR_EVENT && self.stream.as_ref().is_none_or(|s| !s.is_closed()),
             dismissed: false,
         }
     }
 
     fn toggle(&self) {
+        if self.stream.is_some() {
+            // Preserve the user's pause choice while the engine is paused for a seek.
+            // SAFETY: read-only state on this engine's MTA thread.
+            let play = unsafe { self.engine.IsEnded().as_bool() } || !self.play_intent.get();
+            self.play_intent.set(play);
+            // SAFETY: playback control on the engine owned by this thread.
+            unsafe {
+                let _ = if play && !self.seek_wait.get() {
+                    self.engine.Play()
+                } else {
+                    self.engine.Pause()
+                };
+            }
+            return;
+        }
         // SAFETY: playback control on the engine owned by this thread.
         unsafe {
             let _ = if self.engine.IsPaused().as_bool() || self.engine.IsEnded().as_bool() {
@@ -202,9 +292,15 @@ impl Engine {
         unsafe {
             let duration = self.engine.GetDuration();
             if duration.is_finite() && duration > 0.0 {
+                if self.stream.is_some() {
+                    self.seek_wait.set(true);
+                    let _ = self.engine.Pause();
+                }
                 let _ = self
                     .engine
                     .SetCurrentTime(fraction.clamp(0.0, 1.0) * duration);
+            } else {
+                self.pending_seek.set(Some(fraction));
             }
         }
     }
@@ -212,6 +308,11 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        // SAFETY: owned stream; closing wakes pending reads before engine shutdown.
+        if let Some(stream) = &self.stream {
+            let _ = unsafe { stream.stream.Close() };
+        }
+
         // SAFETY: stops rendering into the child window before the UI thread destroys it.
         let _ = unsafe { self.engine.Shutdown() };
     }
@@ -219,7 +320,9 @@ impl Drop for Engine {
 
 // MF_MEDIA_ENGINE_EVENT values used to build states.
 const ERROR_EVENT: u32 = 5;
-const STATE_EVENTS: [u32; 8] = [5, 9, 10, 13, 14, 18, 19, 21];
+const STATE_EVENTS: [u32; 15] = [
+    5, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 21, 1005, 1006, 1009,
+];
 
 /// Player thread body. Blocks on its queue; wakes only for requests and engine events.
 pub(crate) fn run(
@@ -227,6 +330,7 @@ pub(crate) fn run(
     sender: mpsc::SyncSender<Message>,
     report: Box<dyn Fn(tg_core::VideoState) + Send>,
     ready: mpsc::SyncSender<Result<(), Error>>,
+    frames_report: Box<dyn Fn(tg_core::RoundFrame) + Send>,
 ) {
     // SAFETY: per-thread COM and Media Foundation initialization, undone at the end of run.
     let started = unsafe {
@@ -239,11 +343,90 @@ pub(crate) fn run(
         return;
     }
     let _ = ready.send(Ok(()));
-    let notify: IMFMediaEngineNotify = Notify { sender }.into();
+    let mut generation = 0u64;
     let mut engine: Option<Engine> = None;
     let mut size = (1, 1);
-    while let Ok(message) = receiver.recv() {
+    let mut next_frame = std::time::Instant::now();
+    loop {
+        let pacing = engine.as_ref().and_then(|e| {
+            e.frames
+                .as_ref()
+                .filter(|f| f.visible && f.ready.get() && e.state(0).playing)
+                .map(|f| f.interval.get())
+        });
+        let received = if let Some(interval) = pacing {
+            receiver.recv_timeout(
+                next_frame
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(interval),
+            )
+        } else {
+            receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        let message = match received {
+            Ok(message) => message,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(interval) = pacing {
+                    next_frame = crate::round_frames::next_deadline(
+                        next_frame,
+                        std::time::Instant::now(),
+                        interval,
+                    );
+                }
+                if let Some(e) = &mut engine
+                    && let Some(f) = &mut e.frames
+                {
+                    match f.tick(&e.engine) {
+                        Ok(true) => frames_report(f.frame.clone()),
+                        Ok(false) => {}
+                        Err(_) => report(tg_core::VideoState {
+                            audio_token: e.audio_token,
+                            failed: true,
+                            ..Default::default()
+                        }),
+                    }
+                }
+                continue;
+            }
+            Err(_) => break,
+        };
         match message {
+            Message::OpenStream {
+                reader,
+                window,
+                width,
+                height,
+            } => {
+                generation = generation.wrapping_add(1);
+                engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
+                size = (width, height);
+                let token = reader.token;
+                match Engine::open_source(
+                    &notify,
+                    Path::new("video.mp4"),
+                    window,
+                    None,
+                    Some(reader),
+                    None,
+                ) {
+                    Ok(opened) => {
+                        opened.resize(width, height);
+                        engine = Some(opened);
+                    }
+                    Err(_) => report(tg_core::VideoState {
+                        stream_token: Some(token),
+                        failed: true,
+                        ..Default::default()
+                    }),
+                }
+            }
             Message::Open {
                 path,
                 window,
@@ -251,7 +434,13 @@ pub(crate) fn run(
                 height,
                 token,
             } => {
+                generation = generation.wrapping_add(1);
                 engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
                 size = (width, height);
                 match Engine::open(&notify, &path, window, token) {
                     Ok(opened) => {
@@ -265,8 +454,43 @@ pub(crate) fn run(
                     }),
                 }
             }
-            Message::OpenAudio { path, token } => {
+            Message::OpenRound { path, size, token } => {
+                generation = generation.wrapping_add(1);
                 engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
+                let opened = crate::round_frames::Frames::new(size, token).and_then(|frames| {
+                    Engine::open_source(&notify, &path, 0, Some(token), None, Some(frames))
+                });
+                match opened {
+                    Ok(opened) => engine = Some(opened),
+                    Err(_) => report(tg_core::VideoState {
+                        audio_token: Some(token),
+                        failed: true,
+                        ..Default::default()
+                    }),
+                }
+            }
+            Message::RoundSurface(surface) => {
+                if let Some((size, visible)) = surface.take()
+                    && let Some(e) = &mut engine
+                    && let Some(f) = &mut e.frames
+                {
+                    f.visible = visible;
+                    f.size = size.clamp(1, 2048);
+                }
+            }
+            Message::OpenAudio { path, token } => {
+                generation = generation.wrapping_add(1);
+                engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
                 match Engine::open(&notify, &path, 0, Some(token)) {
                     Ok(opened) => engine = Some(opened),
                     Err(_) => report(tg_core::VideoState {
@@ -285,6 +509,7 @@ pub(crate) fn run(
             Message::TogglePause => {
                 if let Some(engine) = &engine {
                     engine.toggle();
+                    report(engine.state(0));
                 }
             }
             Message::Seek(fraction) => {
@@ -293,16 +518,27 @@ pub(crate) fn run(
                 }
             }
             Message::Close(done) => {
+                generation = generation.wrapping_add(1);
                 engine = None;
                 let _ = done.send(());
             }
-            Message::Event(event) => {
+            Message::Event {
+                event,
+                generation: origin,
+            } => {
                 if let Some(engine) = &engine
+                    && origin == generation
                     && STATE_EVENTS.contains(&event)
                 {
                     if event == 10 {
                         // Loaded metadata: the video size is known, fit it into the window.
                         engine.resize(size.0, size.1);
+                        if let Some(f) = &engine.frames {
+                            f.set_rate(&engine.engine);
+                        }
+                        if let Some(fraction) = engine.pending_seek.take() {
+                            engine.seek(fraction);
+                        }
                     }
                     report(engine.state(event));
                 }
@@ -311,7 +547,7 @@ pub(crate) fn run(
         }
     }
     drop(engine);
-    drop(notify);
+
     // SAFETY: balances MFStartup and CoInitializeEx above on this thread.
     unsafe {
         let _ = MFShutdown();
@@ -320,11 +556,46 @@ pub(crate) fn run(
 }
 
 /// Child window that receives the video. Created, moved and destroyed on the UI thread.
-pub(crate) struct ChildWindow(
-    HWND,
-    std::cell::Cell<tg_core::VideoRect>,
-    std::cell::Cell<Option<tg_core::VideoRect>>,
-);
+pub(crate) struct ChildWindow(HWND, std::cell::Cell<tg_core::VideoRect>);
+
+/// Whether the player's video window under `parent` is visible with a non-empty window region.
+/// Used by reference checks; hardware video pixels cannot be read back. `None` when there is no
+/// video window.
+pub(crate) fn video_window_shown(parent: isize) -> Option<bool> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, NULLREGION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, IsWindowVisible};
+    let class: Vec<u16> = "FerrogramVideo\0".encode_utf16().collect();
+    // SAFETY: `parent` is a live window of this thread and `class` is NUL terminated; the
+    // temporary region is created and deleted here, and the child handle is only queried.
+    unsafe {
+        let child = FindWindowExW(
+            parent as HWND,
+            std::ptr::null_mut(),
+            class.as_ptr(),
+            std::ptr::null(),
+        );
+        if child.is_null() {
+            return None;
+        }
+        let region = CreateRectRgn(0, 0, 0, 0);
+        if region.is_null() {
+            return None;
+        }
+        let kind = GetWindowRgn(child, region);
+        let mut bounds = RECT::default();
+        GetRgnBox(region, &mut bounds);
+        DeleteObject(region);
+        Some(
+            IsWindowVisible(child) != 0
+                && kind != NULLREGION
+                && bounds.right > bounds.left
+                && bounds.bottom > bounds.top,
+        )
+    }
+}
 
 impl ChildWindow {
     pub(crate) fn create(parent: isize, rect: tg_core::VideoRect) -> Result<Self, Error> {
@@ -369,60 +640,15 @@ impl ChildWindow {
             // SAFETY: reads this thread's last error right after the failed call.
             return Err(Error("video window", unsafe { GetLastError() }));
         }
-        Ok(Self(
-            window,
-            std::cell::Cell::new(rect),
-            std::cell::Cell::new(None),
-        ))
+        Ok(Self(window, std::cell::Cell::new(rect)))
     }
 
     pub(crate) fn handle(&self) -> isize {
         self.0 as isize
     }
 
-    pub(crate) fn round(&self, viewport: tg_core::VideoRect) -> Result<(), Error> {
-        use windows_sys::Win32::Graphics::Gdi::{
-            CombineRgn, CreateEllipticRgn, CreateRectRgn, DeleteObject, RGN_AND, SetWindowRgn,
-        };
-        self.2.set(Some(viewport));
-        let r = self.1.get();
-        // SAFETY: temporary owned GDI regions, bounded physical dimensions from the UI. On
-        // successful SetWindowRgn ownership transfers to Windows; all other regions are freed.
-        unsafe {
-            let ellipse = CreateEllipticRgn(0, 0, r.width.max(1) + 1, r.height.max(1) + 1);
-            let clip = CreateRectRgn(
-                (viewport.x - r.x).max(0),
-                (viewport.y - r.y).max(0),
-                (viewport.x + viewport.width - r.x).min(r.width),
-                (viewport.y + viewport.height - r.y).min(r.height),
-            );
-            if ellipse.is_null() || clip.is_null() {
-                if !ellipse.is_null() {
-                    DeleteObject(ellipse);
-                }
-                if !clip.is_null() {
-                    DeleteObject(clip);
-                }
-                return Err(Error("round video region", GetLastError()));
-            }
-            let combined = CombineRgn(ellipse, ellipse, clip, RGN_AND);
-            DeleteObject(clip);
-            if combined == 0 || SetWindowRgn(self.0, ellipse, 1) == 0 {
-                DeleteObject(ellipse);
-                return Err(Error("round video region", GetLastError()));
-            }
-        }
-        Ok(())
-    }
     pub(crate) fn place(&self, rect: tg_core::VideoRect) -> Result<(), Error> {
         self.1.set(rect);
-        if let Some(viewport) = self.2.get()
-            && let Err(error) = self.round(viewport)
-        {
-            // SAFETY: hide the live owned child if a new clipping region cannot be set.
-            unsafe { ShowWindow(self.0, windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE) };
-            return Err(error);
-        }
         // SAFETY: the window is owned by this struct and still alive.
         unsafe {
             SetWindowPos(
@@ -585,74 +811,5 @@ impl Drop for Backdrop {
     fn drop(&mut self) {
         // SAFETY: destroyed once on the UI thread that created it; WM_NCDESTROY frees the box.
         unsafe { DestroyWindow(self.0) };
-    }
-}
-
-#[cfg(test)]
-mod round_tests {
-    use super::*;
-    #[test]
-    fn round_region_excludes_corners_and_follows_viewport_after_move() {
-        use windows_sys::Win32::Graphics::Gdi::{
-            CreateRectRgn, DeleteObject, GetWindowRgn, PtInRegion,
-        };
-        // SAFETY: a temporary top-level STATIC window on this test thread; no shared HWNDs.
-        let parent = unsafe {
-            CreateWindowExW(
-                0,
-                windows_sys::w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP,
-                0,
-                0,
-                400,
-                400,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                GetModuleHandleW(std::ptr::null()),
-                std::ptr::null(),
-            )
-        };
-        assert!(!parent.is_null());
-        let child = ChildWindow::create(
-            parent as isize,
-            tg_core::VideoRect {
-                x: 20,
-                y: 20,
-                width: 200,
-                height: 200,
-            },
-        )
-        .unwrap();
-        let viewport = tg_core::VideoRect {
-            x: 0,
-            y: 70,
-            width: 400,
-            height: 200,
-        };
-        child.round(viewport).unwrap();
-        // SAFETY: owned temporary output region; live child; querying never takes ownership.
-        unsafe {
-            let region = CreateRectRgn(0, 0, 0, 0);
-            assert_ne!(GetWindowRgn(child.0, region), 0);
-            assert_eq!(PtInRegion(region, 0, 60), 0);
-            assert_eq!(PtInRegion(region, 100, 20), 0);
-            assert_ne!(PtInRegion(region, 100, 100), 0);
-            child
-                .place(tg_core::VideoRect {
-                    x: 20,
-                    y: 80,
-                    width: 200,
-                    height: 200,
-                })
-                .unwrap();
-            assert_ne!(GetWindowRgn(child.0, region), 0);
-            assert_ne!(PtInRegion(region, 100, 20), 0);
-            assert_eq!(PtInRegion(region, 100, 195), 0);
-            DeleteObject(region);
-        }
-        drop(child);
-        // SAFETY: the child is gone; the parent is owned by this test and destroyed once.
-        unsafe { DestroyWindow(parent) };
     }
 }

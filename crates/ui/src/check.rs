@@ -102,6 +102,7 @@ mod tests {
             ended: false,
             failed,
             dismissed: false,
+            ..Default::default()
         }
     }
 

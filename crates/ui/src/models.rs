@@ -220,6 +220,7 @@ pub(crate) struct Feed {
     pub jump_unread: Cell<bool>,
     pub jump_target: Cell<Option<MessageId>>,
     pub highlight: Cell<Option<MessageId>>,
+    pub round_scale: Cell<Option<(ChatId, MessageId, f32)>>,
     pub audio: Cell<Option<(MessageId, tg_core::VideoState)>>,
     // Only viewport rows own raster images, at most 64 rows and 96 MiB in total.
     visible: RefCell<Vec<Cached>>,
@@ -241,11 +242,25 @@ impl Feed {
             jump_target: Cell::new(None),
             highlight: Cell::new(None),
             audio: Cell::new(None),
+            round_scale: Cell::new(None),
             notify: ModelNotify::default(),
         })
     }
     pub fn invalidate(&self) {
         self.visible.borrow_mut().clear();
+    }
+    /// Redraws the visible row that holds `id`, if any. For changes `row_data` applies itself
+    /// (voice and round progress, download state, listened marks): the row keeps its cached
+    /// rasters and stays on screen, and no other row is re-created.
+    pub fn notify_message(&self, id: MessageId) {
+        let index = self
+            .visible
+            .borrow()
+            .iter()
+            .position(|row| row.context.members.contains(&id));
+        if let Some(index) = index {
+            self.notify.row_changed(index);
+        }
     }
     pub fn invalidate_message(&self, id: MessageId) {
         self.visible
@@ -481,7 +496,12 @@ impl Feed {
         };
         let (frames, media_width, media_height) =
             if let Some(tg_core::Attachment::Round(r)) = &first.attachment {
-                let d = f32::from(r.length.clamp(1, 240)).min(max_width);
+                let growth = self
+                    .round_scale
+                    .get()
+                    .filter(|(chat, id, _)| *chat == first.chat && *id == first.id)
+                    .map_or(0.0, |(_, _, growth)| growth);
+                let d = (f32::from(r.length.clamp(1, 240)) * (1.0 + growth / 3.0)).min(max_width);
                 (vec![[0.0, 0.0, d, d]], d, d)
             } else if let Some(tg_core::Attachment::Sticker(s) | tg_core::Attachment::Emoji(s)) =
                 &first.attachment
@@ -1035,6 +1055,7 @@ mod feed_tests {
             video: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
                 file: tg_core::MediaFile {
+                    partial: None,
                     size: 0,
                     downloaded: 0,
                     downloading: false,
@@ -1100,6 +1121,52 @@ mod feed_tests {
         assert_eq!(feed.row_count(), 1);
         assert!(feed.visible.borrow()[0].row.unread);
     }
+    #[test]
+    fn round_growth_and_shrink_preserve_reader_anchor_and_width_bound() {
+        let feed = Feed::new(None);
+        let mut items: Vec<_> = (1..=10).map(message).collect();
+        let id = items[2].id;
+        items[2].attachment = Some(tg_core::Attachment::Round(tg_core::Round {
+            file: tg_core::MediaFile {
+                id: 17,
+                path: None,
+                partial: None,
+                size: 100,
+                downloaded: 0,
+                downloading: false,
+            },
+            duration: 12,
+            length: 240,
+            viewed: false,
+        }));
+        feed.history.borrow_mut().open(ChatId(1));
+        feed.history
+            .borrow_mut()
+            .page(ChatId(1), MessageId(0), None, items, false);
+        let (mut top, _) = feed.layout(60.0, 1200.0, false);
+        let anchor = feed.geometry.borrow().anchor(top);
+        for growth in [0.5, 1.0, 0.5, 0.0] {
+            feed.round_scale.set(Some((ChatId(1), id, growth)));
+            feed.invalidate_message(id);
+            (top, _) = feed.layout(top, 1200.0, false);
+            assert_eq!(feed.geometry.borrow().anchor(top), anchor);
+            let row = (0..feed.row_count())
+                .filter_map(|i| feed.row_data(i))
+                .find(|r| r.key == id.0.to_string())
+                .unwrap();
+            assert!((row.media_width - (240.0 * (1.0 + growth / 3.0))).abs() < 0.1);
+        }
+        feed.width.set(260.0);
+        feed.round_scale.set(Some((ChatId(1), id, 1.0)));
+        feed.invalidate();
+        feed.layout(top, 1200.0, false);
+        let row = (0..feed.row_count())
+            .filter_map(|i| feed.row_data(i))
+            .find(|r| r.key == id.0.to_string())
+            .unwrap();
+        assert_eq!(row.media_width, 260.0);
+    }
+
     #[test]
     fn real_text_geometry_preserves_visible_id_and_pixel_offset_when_window_slides() {
         let feed = Feed::new(None);
@@ -1169,6 +1236,7 @@ mod feed_tests {
         m.album = album;
         m.photo = Some(tg_core::Photo {
             file: tg_core::MediaFile {
+                partial: None,
                 size: 0,
                 downloaded: 0,
                 downloading: false,
@@ -1195,6 +1263,7 @@ mod feed_tests {
             m.text = String::new();
             m.attachment = Some(tg_core::Attachment::Document(tg_core::Document {
                 file: tg_core::MediaFile {
+                    partial: None,
                     size: 4096,
                     downloaded: 0,
                     downloading: false,
@@ -1356,6 +1425,43 @@ mod action_tests {
             sender: None,
             photo: None,
         }
+    }
+    #[test]
+    fn a_playback_or_download_update_keeps_the_row_on_screen() {
+        // Voice/round progress and download state are applied in row_data, so an update only
+        // redraws that row. Dropping it from the visible rows made the message vanish until the
+        // next layout, and resetting the whole model re-created every row (flicker).
+        let feed = Feed::new(None);
+        {
+            let mut h = feed.history.borrow_mut();
+            h.chat = Some(ChatId(7));
+            h.messages = (19991..=20000)
+                .map(|n| {
+                    let mut m = message(n);
+                    m.album = 0;
+                    m.is_text = true;
+                    m.text = format!("Message {n}");
+                    m
+                })
+                .collect();
+        }
+        feed.layout(0.0, 2000.0, false);
+        let rows = feed.row_count();
+        let id = MessageId(19995 * 1048576);
+        let has = |feed: &Feed| {
+            (0..feed.row_count())
+                .any(|i| feed.row_data(i).is_some_and(|r| r.key == id.0.to_string()))
+        };
+        assert!(rows > 0 && has(&feed));
+        feed.notify_message(id);
+        assert_eq!(feed.row_count(), rows);
+        assert!(has(&feed), "the updated message stays visible");
+        feed.notify_message(MessageId(1));
+        assert_eq!(
+            feed.row_count(),
+            rows,
+            "an off-screen message changes nothing"
+        );
     }
     #[test]
     fn quoted_message_jump_survives_refresh_while_around_page_is_pending() {

@@ -68,6 +68,27 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 <sub>One machine, one account, one run. Your numbers will differ; the method is documented so you can repeat it.</sub>
 
+### Playing a video
+
+The same channel post in all three clients: a 17 s clip, 1080×1080 at 60 fps, played to the end
+in each client's media viewer, windows maximized.
+
+<p align="center">
+  <img src="docs/images/chart-video-memory.svg" alt="Memory while a video plays: Ferrogram 188.5 MB, Telegram Desktop 973.8 MB, AyuGram 1667.4 MB" width="720"><br><br>
+  <img src="docs/images/chart-video-cpu.svg" alt="CPU while a video plays: Ferrogram 6.5 %, Telegram Desktop 53.9 %, AyuGram 30.7 %" width="720">
+</p>
+
+| Client | Private Bytes, chat open | Private Bytes, playing | CPU while playing, % of one core | GPU memory after the viewer closed |
+|---|---:|---:|---:|---:|
+| **Ferrogram** | **105.5 MB** | **188.5 MB** | **6.5** | **0 MB** |
+| Telegram Desktop | 844.8 MB | 973.8 MB | 53.9 | 191.8 MB |
+| AyuGram | 1476.3 MB | 1667.4 MB | 30.7 | 143.1 MB |
+
+<sub>Not a fully like-for-like comparison. Telegram Desktop and AyuGram autoplay videos in the
+chat feed by default, which Ferrogram does not, and that autoplay is part of their numbers; the
+clients do not show the same chat list; the clip came from each client's cache, not from the
+network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).</sub>
+
 ## 🧩 Features
 
 **Works today**
@@ -82,18 +103,20 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - [x] Sending text messages
 - [x] Reply, edit, delete and forward from a context menu 
 - [x] Video playback with GPU decoding (Windows Media Foundation) 
-- [x] Voice messages with a waveform, and round video messages played inside their circle ¹
+- [x] Voice messages with a waveform, and round video messages played inside their circle
 - [x] Files: download with progress, open with a SmartScreen mark, confirmation for programs ¹
 - [x] Static stickers and single emoji drawn large 
 - [x] Service messages ("Anna joined the group") as centred pills 
 - [x] Desktop notifications that open the chat 
+- [x] Videos start playing while they download, with seeking into parts not yet downloaded
+- [x] Interface scale from 50 to 300 %, as in Telegram Desktop
 - [x] Night and OLED themes
 
 <sub>¹ New: tested in demo mode, not yet on a live account.</sub>
 
 **Not yet** — see the [roadmap](docs/ROADMAP.md)
 
-- [ ] Video streaming while downloading, GIFs, animated stickers
+- [ ] GIFs, animated stickers
 - [ ] Reactions, pinning, message links, selecting several messages
 - [ ] Search, folders, settings
 - [ ] Calls, channels with comments, bots, polls

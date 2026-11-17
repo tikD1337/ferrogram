@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "media-loading" | "media-missing" => {
             let photo = tg_core::Photo {
                 file: tg_core::MediaFile {
+                    partial: None,
                     size: 0,
                     downloaded: 0,
                     downloading: false,

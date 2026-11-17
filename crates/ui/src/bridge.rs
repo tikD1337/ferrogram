@@ -27,6 +27,21 @@ impl Queue {
         if self.failed || self.closed {
             return false;
         }
+        if matches!(event, Event::RoundFrame(_))
+            && self
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::RoundFrame(_)))
+        {
+            if let Some(e) = self
+                .events
+                .iter_mut()
+                .find(|e| matches!(e, Event::RoundFrame(_)))
+            {
+                *e = event;
+            }
+            return false;
+        }
         let bytes = event_bytes(&event);
         if self.full(bytes) {
             self.failed = true;
@@ -137,7 +152,8 @@ impl EventSink {
     }
 }
 fn message_bytes(m: &tg_core::Message) -> usize {
-    m.photo.as_ref().map_or(0, photo_bytes)
+    m.video.as_ref().map_or(0, |v| file_bytes(&v.file) + 64)
+        + m.photo.as_ref().map_or(0, photo_bytes)
         + 256
         + match &m.send_state {
             tg_core::SendState::Failed(error) => error.message.capacity(),
@@ -176,7 +192,7 @@ fn event_bytes(e: &Event) -> usize {
         }
         Event::AuthStateChanged(tg_core::AuthState::WaitOtherDevice { link }) => link.capacity(),
         Event::AuthStateChanged(tg_core::AuthState::WaitPassword { hint }) => hint.capacity(),
-        Event::FileUpdated(file) => file.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2),
+        Event::FileUpdated(file) => file_bytes(file),
         Event::CommandFailed { error, .. } => error.message.capacity(),
         Event::ReplyResolved { reply, .. } => reply
             .as_ref()
@@ -219,10 +235,12 @@ fn attachment_bytes(value: &Option<tg_core::Attachment>) -> usize {
     }
 }
 fn file_bytes(f: &tg_core::MediaFile) -> usize {
-    128 + f.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2)
+    128 + f.partial.as_ref().map_or(0, |s| {
+        128 + s.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2)
+    }) + f.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2)
 }
 fn photo_bytes(p: &tg_core::Photo) -> usize {
-    p.minithumbnail.capacity() + p.file.path.as_ref().map_or(0, |p| p.as_os_str().len() * 2) + 128
+    p.minithumbnail.capacity() + file_bytes(&p.file)
 }
 
 #[cfg(test)]
@@ -239,6 +257,22 @@ mod tests {
         assert!(!queue.enqueue(Event::ChatsLoaded { has_more: true }));
         assert!(queue.failed && queue.events.is_empty());
         assert!(!queue.enqueue(Event::ChatsLoaded { has_more: false }));
+    }
+    #[test]
+    fn round_frames_replace_one_pending_handle_even_across_playback_tokens() {
+        let mut queue = Queue::default();
+        for token in 0..4096 {
+            queue.enqueue(Event::RoundFrame(tg_core::RoundFrame {
+                token,
+                pixels: Arc::new(Mutex::new(Default::default())),
+            }));
+        }
+        assert!(!queue.failed);
+        assert_eq!(queue.events.len(), 1);
+        assert_eq!(queue.bytes, 256);
+        assert!(
+            matches!(queue.events.front(), Some(Event::RoundFrame(frame)) if frame.token == 4095)
+        );
     }
     #[test]
     fn startup_hold_does_not_schedule_early_authentication() {

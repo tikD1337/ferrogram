@@ -416,6 +416,7 @@ mod tests {
     fn photo(id: i32) -> Photo {
         Photo {
             file: MediaFile {
+                partial: None,
                 size: 0,
                 downloaded: 0,
                 downloading: false,
@@ -486,6 +487,7 @@ mod tests {
     fn offscreen_file_updates_do_not_enqueue_decodes() {
         let (mut media, rx) = media();
         media.file(MediaFile {
+            partial: None,
             size: 0,
             downloaded: 0,
             downloading: false,

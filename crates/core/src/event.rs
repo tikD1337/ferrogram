@@ -184,6 +184,7 @@ pub enum Event {
     LocalDataLocked,
     /// Playback state of the open video, sent on player events.
     VideoState(crate::VideoState),
+    RoundFrame(crate::RoundFrame),
     FileUpdated(MediaFile),
     MessageContentOpened {
         chat: ChatId,
@@ -278,6 +279,7 @@ pub struct Photo {
 /// TDLib-managed local file; paths are at most 4 KiB and are never logged.
 #[derive(Clone, PartialEq, Eq)]
 pub struct MediaFile {
+    pub partial: Option<crate::StreamFile>,
     pub size: u64,
     pub downloaded: u64,
     pub downloading: bool,

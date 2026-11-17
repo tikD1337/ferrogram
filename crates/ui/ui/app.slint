@@ -71,7 +71,7 @@ export struct MessageRow {
     voice: bool, voice-playing: bool, voice-unlistened: bool, voice-time: string, waveform: [WaveBar],
     document: bool, file-name: string, file-size: string, file-progress: string,
     file-available: bool, file-downloading: bool, attachment-image: image, attachment-y: length,
-    sticker: bool, round: bool, emoji: bool, round-progress: string,
+    sticker: bool, round: bool, round-active: bool, emoji: bool, round-progress: string,
     key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
     // A service message: a centred pill with the rendered text, no bubble.
     service: bool,
@@ -106,6 +106,42 @@ component Link inherits Rectangle {
     height: 32px;
     Text { text: root.text; color: touch.has-hover ? Theme.accent-hover : Theme.accent; horizontal-alignment: center; vertical-alignment: center; font-size: Theme.type-body; }
     touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+// A percentage slider in fixed steps, like Telegram Desktop's interface scale slider.
+component ScaleSlider inherits Rectangle {
+    in-out property <int> value: 100;
+    in property <int> minimum: 50;
+    in property <int> maximum: 300;
+    in property <int> step: 5;
+    callback edited();
+    height: 24px;
+    track := Rectangle {
+        x: 8px; y: (parent.height - 4px) / 2; width: parent.width - 16px; height: 4px;
+        border-radius: 2px; background: Theme.field-edge;
+    }
+    Rectangle {
+        x: track.x; y: track.y; height: track.height; border-radius: 2px; background: Theme.accent;
+        width: (root.value - root.minimum) / (root.maximum - root.minimum) * track.width;
+    }
+    Rectangle {
+        width: 16px; height: 16px; border-radius: 8px; background: Theme.accent;
+        x: track.x + (root.value - root.minimum) / (root.maximum - root.minimum) * track.width - 8px;
+        y: (parent.height - 16px) / 2;
+    }
+    TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        function pick(position: length) {
+            root.value = root.minimum + round(clamp((position - track.x) / track.width, 0, 1)
+                * (root.maximum - root.minimum) / root.step) * root.step;
+            root.edited();
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                self.pick(self.mouse-x);
+            }
+        }
+        moved => { if self.pressed { self.pick(self.mouse-x); } }
+    }
 }
 component Input inherits Rectangle {
     in-out property <string> text;
@@ -219,6 +255,29 @@ export component AppWindow inherits Window {
     // Opens the video of a feed cell in the separate media viewer window.
     callback open-video(row: int, cell: int);
     callback attachment-action(key: string, action: int, fraction: float);
+    // Interface scale dialog (action-dialog 4). `scale-applied` is the stored value, 0 = auto.
+    in-out property <int> scale-percent: 100;
+    in-out property <bool> scale-auto: true;
+    in property <int> scale-system: 100;
+    in property <int> scale-applied;
+    callback open-scale();
+    callback apply-scale(value: int);
+    in property <bool> round-floating;
+    in property <length> round-x;
+    in property <length> round-y;
+    in property <length> round-size;
+    in property <image> round-preview;
+    in property <image> round-frame;
+    in property <bool> round-expanded;
+    out property <float> round-growth: root.round-expanded ? 1 : 0;
+    animate round-growth { duration: 200ms; easing: ease-in-out; }
+    changed round-growth => { root.round-scale(root.round-growth); }
+    callback round-scale(float);
+    in property <string> round-key;
+    in property <string> round-time;
+    in property <string> round-arc;
+    callback round-pointer(phase: int, x: float, y: float);
+    callback round-return();
     callback confirm-file();
     in property <string> file-name;
 
@@ -359,9 +418,14 @@ export component AppWindow inherits Window {
                         }
                         Text { x: 58px; text: "Chats"; color: Theme.text; font-size: Theme.type-heading; font-weight: 600; vertical-alignment: center; height: parent.height; }
                         menu := PopupWindow {
-                            x: 10px; y: 48px; width: 200px; height: 52px;
+                            x: 10px; y: 48px; width: 200px; height: 92px;
                             Rectangle { background: Theme.menu; border-radius: Theme.radius-panel; drop-shadow-blur: 12px; drop-shadow-color: Theme.shadow;
                                 Rectangle { x: 0px; y: 6px; width: parent.width; height: 40px;
+                                    background: scale-touch.has-hover ? Theme.menu-hover : transparent;
+                                    Text { x: 16px; text: "Interface scale"; color: Theme.text; font-size: Theme.type-body; vertical-alignment: center; height: parent.height; }
+                                    scale-touch := TouchArea { enabled: !root.blocked; clicked => { root.open-scale(); } }
+                                }
+                                Rectangle { x: 0px; y: 46px; width: parent.width; height: 40px;
                                     background: logout-touch.has-hover ? Theme.menu-hover : transparent;
                                     Text { x: 16px; text: "Log out"; color: root.demo ? Theme.muted : Theme.text; font-size: Theme.type-body; vertical-alignment: center; height: parent.height; }
                                     logout-touch := TouchArea { enabled: !root.blocked && !root.demo; clicked => { root.logout(); } }
@@ -409,6 +473,16 @@ export component AppWindow inherits Window {
                         clip: true;
                         property <length> location-x: self.absolute-position.x;
                         property <length> location-y: self.absolute-position.y;
+                        // `changed` handlers do not publish an unchanged initial value: without
+                        // this, a feed created in place kept feed-left and the viewport width at 0,
+                        // which clipped the native round to nothing and mispositioned clicks.
+                        init => {
+                            root.feed-left = self.location-x;
+                            root.feed-top = self.location-y;
+                            root.feed-view-width = self.width;
+                            root.feed-height = self.height;
+                            root.viewport-changed();
+                        }
                         changed location-x => { root.feed-left=self.location-x; root.viewport-changed(); }
                         changed location-y => { root.feed-top=self.location-y; root.viewport-changed(); }
                         changed width => { root.feed-view-width=self.width; root.viewport-changed(); }
@@ -512,7 +586,10 @@ export component AppWindow inherits Window {
                                         if msg.voice && msg.voice-unlistened: Rectangle { x: parent.width - 7px; y: 48px; width: 5px; height: 5px; border-radius: self.height / 2; background: Theme.accent; }
                                         if msg.document: Text { x: 56px; y: 9px; width: parent.width - 62px; height: 22px; text: msg.file-name; color: Theme.text; font-size: Theme.type-body; font-weight: 600; overflow: elide; }
                                         if msg.document: Text { x: 56px; y: 34px; width: parent.width - 62px; height: 20px; text: msg.file-size + (msg.file-downloading ? " / downloading" : msg.file-available ? " / Open file" : " / Download"); color: Theme.muted; font-size: Theme.type-meta; overflow: elide; }
+                                        // Explicit position: Slint centres an element that has a size but
+                                        // no x, which put the voice play button's area over the waveform.
                                         TouchArea {
+                                            x: 0px; y: 0px;
                                             width: msg.voice ? 48px : parent.width; height: parent.height;
                                             mouse-cursor: MouseCursor.pointer;
                                             clicked => { root.attachment-action(msg.key, 0, 0); }
@@ -533,8 +610,8 @@ export component AppWindow inherits Window {
                                         for cell[index] in msg.cells: Rectangle {
                                             x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: msg.sticker ? transparent : Theme.field;
                                             Text { text: cell.label; color: Theme.muted; font-size: msg.sticker ? 80px : 13px; horizontal-alignment: center; vertical-alignment: center; }
-                                            Image { source: cell.image; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; width: cell.raster-width > 0px ? cell.raster-width : parent.width; height: cell.raster-height > 0px ? cell.raster-height : parent.height; image-fit: msg.emoji ? contain : cover; }
-                                            if cell.video || msg.round: Rectangle {
+                                            Image { source: msg.round && msg.key == root.round-key && root.round-frame.width > 0 ? root.round-frame : cell.image; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; width: cell.raster-width > 0px ? cell.raster-width : parent.width; height: cell.raster-height > 0px ? cell.raster-height : parent.height; image-fit: msg.emoji ? contain : cover; }
+                                            if cell.video || (msg.round && (!msg.round-active || !msg.voice-playing)): Rectangle {
                                                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                                 width: 48px; height: 48px; border-radius: self.height / 2; background: play-touch.has-hover ? Theme.scrim-hover : Theme.scrim;
                                                 Path { x: 18px; y: 14px; width: 16px; height: 20px; viewbox-width: 16; viewbox-height: 20; fill: Theme.on-strong; commands: msg.round && msg.voice-playing ? "M0 0 H5 V20 H0 Z M11 0 H16 V20 H11 Z" : "M0 0 L16 10 L0 20 Z"; }
@@ -564,8 +641,9 @@ export component AppWindow inherits Window {
                                             height: parent.height; color: Theme.on-strong; font-size: Theme.type-meta; vertical-alignment: center; }
                                         if msg.voice-unlistened: Rectangle { x: parent.width - 12px; y: 8px; width: 5px; height: 5px; border-radius: self.height / 2; background: Theme.on-strong; }
                                     }
-                                    if msg.round && msg.file-downloading: Path {
-                                        x: 0px; y: msg.media-y; width: msg.media-width; height: msg.media-height;
+                                    if msg.round && (msg.file-downloading || msg.round-active): Path {
+                                        x: msg.round-active ? -2px : 0px; y: msg.media-y - (msg.round-active ? 2px : 0px);
+                                        width: msg.media-width + (msg.round-active ? 4px : 0px); height: msg.media-height + (msg.round-active ? 4px : 0px);
                                         viewbox-width: 100; viewbox-height: 100; fill: transparent; stroke: Theme.accent; stroke-width: 1.5px;
                                         commands: msg.round-progress;
                                     }
@@ -652,6 +730,40 @@ export component AppWindow inherits Window {
             }
         }
     }
+    if root.round-floating: Rectangle {
+        x: root.round-x - 4px; y: root.round-y - 4px;
+        width: root.round-size + 8px; height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.shadow;
+        Rectangle {
+            x: 4px; y: 4px; width: root.round-size; height: self.width;
+            border-radius: self.width / 2; clip: true;
+            background: Theme.field;
+            Image { source: root.round-frame.width > 0 ? root.round-frame : root.round-preview; width: parent.width; height: parent.height; image-fit: cover; }
+        }
+        Path { width: parent.width; height: parent.height; viewbox-width: 100; viewbox-height: 100;
+            fill: transparent; stroke: Theme.accent; stroke-width: 2px; commands: root.round-arc; }
+        Rectangle {
+            x: (parent.width - self.width)/2; y: parent.height + 2px;
+            width: time.preferred-width + 12px; height: 20px; border-radius: self.height / 2;
+            background: Theme.scrim;
+            time := Text { text: root.round-time; color: Theme.on-strong; font-size: Theme.type-meta;
+                horizontal-alignment: center; vertical-alignment: center; }
+        }
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.round-pointer(0,(self.absolute-position.x+self.mouse-x)/1px,(self.absolute-position.y+self.mouse-y)/1px);
+                } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                    root.round-pointer(2,(self.absolute-position.x+self.mouse-x)/1px,(self.absolute-position.y+self.mouse-y)/1px);
+                } else if event.kind == PointerEventKind.cancel { root.round-pointer(3,0,0); }
+            }
+            moved => { if self.pressed { root.round-pointer(1,(self.absolute-position.x+self.mouse-x)/1px,(self.absolute-position.y+self.mouse-y)/1px); } }
+            double-clicked => { root.round-return(); }
+            scroll-event(event) => { root.wheel(event.delta-y); return accept; }
+        }
+    }
     if root.action-dialog != 0: Rectangle {
         background: Theme.scrim;
         TouchArea { }
@@ -660,12 +772,26 @@ export component AppWindow inherits Window {
             key-pressed(event) => { if event.text == Key.Escape { root.cancel-action(); return accept; } return reject; }
         }
         Rectangle {
-            width: 420px; height: root.action-dialog == 1 ? 220px : root.action-dialog == 3 ? 260px : 440px;
+            width: 420px; height: root.action-dialog == 1 ? 220px : root.action-dialog == 3 ? 260px : root.action-dialog == 4 ? 250px : 440px;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             border-radius: Theme.radius-panel; background: Theme.panel;
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Text { text: root.action-dialog == 1 ? "Delete message?" : root.action-dialog == 3 ? "Open this file?" : "Forward to"; color: Theme.text; font-size: Theme.type-dialog; font-weight: 600; }
+                Text { text: root.action-dialog == 1 ? "Delete message?" : root.action-dialog == 3 ? "Open this file?" : root.action-dialog == 4 ? "Interface scale" : "Forward to"; color: Theme.text; font-size: Theme.type-dialog; font-weight: 600; }
+                if root.action-dialog == 4: Rectangle {
+                    height: 38px;
+                    Rectangle { x: 0px; y: 9px; width: 18px; height: 18px; border-radius: Theme.radius-small; border-width: 1px; border-color: Theme.accent; background: root.scale-auto ? Theme.badge : transparent;
+                        if root.scale-auto: Path { x: 3px; y: 4px; width: 12px; height: 9px; viewbox-width: 12; viewbox-height: 9; fill: transparent; stroke: Theme.on-strong; stroke-width: 2px; commands: "M1 4 L4 7 L11 1"; }
+                    }
+                    Text { x: 28px; width: parent.width - 28px; text: "Default interface scale (" + root.scale-system + "%)"; color: Theme.text; font-size: Theme.type-body; overflow: elide; vertical-alignment: center; }
+                    TouchArea { clicked => { root.scale-auto = !root.scale-auto; if root.scale-auto { root.scale-percent = root.scale-system; } } }
+                }
+                if root.action-dialog == 4: HorizontalLayout {
+                    spacing: 12px; height: 24px;
+                    ScaleSlider { value <=> root.scale-percent; edited => { root.scale-auto = false; } }
+                    Text { width: 52px; text: root.scale-percent + "%"; color: Theme.text; font-size: Theme.type-body; horizontal-alignment: right; vertical-alignment: center; }
+                }
+                if root.action-dialog == 4: Text { text: "Ferrogram restarts to apply a new scale."; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; }
                 if root.action-dialog == 3: Text { text: "This file can run code on your computer. Open it only if you trust its source."; color: Theme.text; font-size: Theme.type-body; wrap: word-wrap; }
                 if root.action-dialog == 3: Text { text: root.file-name; color: Theme.muted; font-size: Theme.type-body; overflow: elide; }
                 if root.action-dialog == 1: Text { text: "Delete the selected message or entire album?"; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; }
@@ -691,6 +817,11 @@ export component AppWindow inherits Window {
                     Link { text: "Cancel"; width: 100px; clicked => { root.cancel-action(); } }
                     if root.action-dialog == 3: Action { text: "Open"; width: 100px; clicked => { root.confirm-file(); } }
                     if root.action-dialog == 1: Action { text: "Delete"; width: 100px; clicked => { root.confirm-delete(); } }
+                    if root.action-dialog == 4: Action {
+                        text: "Restart now"; width: 130px;
+                        enabled: (root.scale-auto ? 0 : root.scale-percent) != root.scale-applied;
+                        clicked => { root.apply-scale(root.scale-auto ? 0 : root.scale-percent); }
+                    }
                 }
             }
         }
@@ -751,6 +882,15 @@ export component AppWindow inherits Window {
 
 // Media viewer: a separate window, as in Telegram Desktop. The video is drawn by a native child
 // window over the area above the control bar; the Rust side places it from this window's size.
+component BufferSpinner inherits Rectangle {
+    width: 16px; height: 16px;
+    property <angle> spin: 0deg;
+    init => { self.spin = 360deg; }
+    animate spin { duration: 800ms; iteration-count: -1; }
+    Path { width: parent.width; height: parent.height; transform-rotation: parent.spin;
+        viewbox-width: 16; viewbox-height: 16; fill: transparent; stroke: Theme.on-strong; stroke-width: 2px;
+        commands: "M8 1 A7 7 0 1 1 1 8"; }
+}
 export component MediaViewer inherits Window {
     title: "Ferrogram - Media viewer";
     icon: @image-url("icon.png");
@@ -766,6 +906,8 @@ export component MediaViewer inherits Window {
     in property <bool> playing;
     in property <bool> failed;
     in property <float> progress;
+    in property <float> download-start;
+    in property <float> download-end;
     in property <string> time;
     out property <length> bar: 64px;
     callback toggle();
@@ -797,9 +939,11 @@ export component MediaViewer inherits Window {
                 if !root.playing: Path { x: 14px; y: 11px; width: 15px; height: 18px; viewbox-width: 15; viewbox-height: 18; fill: Theme.on-strong; commands: "M0 0 L15 9 L0 18 Z"; }
                 toggle-touch := TouchArea { clicked => { root.toggle(); } }
             }
+            if root.loading: BufferSpinner { x: 53px; y: 24px; }
             seek := Rectangle {
                 x: 70px; y: 16px; width: parent.width - 70px - 170px; height: 32px;
                 Rectangle { y: 14px; height: 4px; border-radius: self.height / 2; background: Theme.track; }
+                Rectangle { x: parent.width * clamp(root.download-start,0,1); y: 14px; height: 4px; width: parent.width * clamp(root.download-end - root.download-start,0,1); background: Theme.on-strong-3; }
                 Rectangle { x: 0px; y: 14px; height: 4px; border-radius: self.height / 2; background: Theme.accent; width: parent.width * clamp(root.progress, 0, 1); }
                 Rectangle {
                     x: parent.width * clamp(root.progress, 0, 1) - 6px; y: 10px; width: 12px; height: 12px; border-radius: self.height / 2;

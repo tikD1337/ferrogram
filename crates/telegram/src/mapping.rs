@@ -685,7 +685,38 @@ pub(crate) fn media_file(value: &Value) -> Result<MediaFile, CommandError> {
     } else {
         None
     };
+    let size = value["size"]
+        .as_u64()
+        .filter(|n| *n > 0)
+        .or_else(|| value["expected_size"].as_u64())
+        .unwrap_or(0)
+        .min((1 << 53) - 1);
+    let partial_path = value["local"]["path"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.len() > MAX_LINK_BYTES {
+                Err(malformed())
+            } else {
+                Ok(std::path::PathBuf::from(s))
+            }
+        })
+        .transpose()?;
     Ok(MediaFile {
+        partial: Some(tg_core::StreamFile {
+            id,
+            size,
+            path: partial_path,
+            offset: value["local"]["download_offset"]
+                .as_u64()
+                .unwrap_or(0)
+                .min(size),
+            prefix: value["local"]["downloaded_prefix_size"]
+                .as_u64()
+                .unwrap_or(0)
+                .min(size),
+            completed: value["local"]["is_downloading_completed"] == true,
+        }),
         size: value["size"]
             .as_u64()
             .filter(|n| *n > 0)
@@ -757,6 +788,7 @@ fn video(content: &Value) -> Result<(Option<Photo>, Option<Video>), CommandError
     Ok((
         preview,
         Some(Video {
+            supports_streaming: value["supports_streaming"] == true,
             file: media_file(&value["video"])?,
             duration,
             width,
@@ -877,6 +909,7 @@ fn thumbnail(value: &Value, mini_id: Option<i32>) -> Result<Option<Photo>, Comma
         // A minithumbnail-only key must never start a download of the document itself.
         Ok(Some(Photo {
             file: MediaFile {
+                partial: None,
                 id: -id,
                 size: 0,
                 downloaded: 0,

@@ -144,8 +144,9 @@ $scenarios = @{
         Assert-Snapshot $png
         "ready, $($r.chats) chats, $($r.messages) messages"
     }
-    # The viewer plays the demo video on Media Foundation, and the hardened process refuses
-    # memory reads from this (same-user) script.
+    # The viewer streams the demo video on Media Foundation while the demo download delivers one
+    # 128 KiB part every two seconds: playback has to wait for data and resume to reach the end.
+    # The hardened process also refuses memory reads from this (same-user) script.
     video = {
         $probe = {
             param($process, $deadline)
@@ -153,9 +154,9 @@ $scenarios = @{
             $script:memoryRead = [FerrogramSmoke]::CanOpen([uint32]$process.Id, 0x0010)
             $script:query = [FerrogramSmoke]::CanOpen([uint32]$process.Id, 0x1000)
         }
-        $r = Invoke-Client 'video' @('--demo-video', '7') 60 $probe
+        $r = Invoke-Client 'video' @('--demo-video', '12') 60 $probe
         Assert-True (-not $r.video.failed) 'video playback reported a failure'
-        Assert-True ($r.video.max_position_ms -ge 1500) "video reached only $($r.video.max_position_ms) ms"
+        Assert-True ($r.video.max_position_ms -ge 3500) "video reached only $($r.video.max_position_ms) ms"
         Assert-True $script:query 'the process cannot even be queried'
         if ($elevated) {
             $access = 'not checked (elevated: administrators bypass the process DACL)'

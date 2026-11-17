@@ -22,7 +22,18 @@ pub(crate) struct Demo {
     chats: Arc<std::sync::Mutex<Vec<Chat>>>,
     // At most two delayed page workers, one per direction; no retained full history.
     pending: Arc<AtomicUsize>,
+    video_workers: Arc<AtomicUsize>,
     downloads: Arc<std::sync::Mutex<std::collections::BTreeMap<i32, Arc<AtomicBool>>>>,
+    windows: Arc<std::sync::Mutex<std::collections::BTreeMap<i32, DemoWindow>>>,
+}
+/// A streaming download as TDLib runs it: from `offset` up to `end`, extended in place when the
+/// same offset is requested again with a larger limit.
+struct DemoWindow {
+    offset: u64,
+    cursor: u64,
+    end: u64,
+    running: bool,
+    cancelled: Arc<AtomicBool>,
 }
 impl Demo {
     pub fn new(media_path: std::path::PathBuf, text_only: bool) -> Self {
@@ -35,6 +46,8 @@ impl Demo {
             chats: Arc::default(),
             pending: Arc::default(),
             downloads: Arc::default(),
+            windows: Arc::default(),
+            video_workers: Arc::default(),
         }
     }
     pub fn seed(&mut self) {
@@ -217,9 +230,18 @@ impl Demo {
                     sink.post(Event::NewMessage(m));
                 }
             }
+            Command::DownloadRange {
+                file,
+                offset,
+                limit,
+            } => self.download_video(file, offset, limit)?,
+            Command::DownloadFile(id) if (VIDEO_FILE_ID..2_000_000).contains(&id) => {
+                self.download_video(id, 0, 0)?
+            }
             Command::DownloadFile(id) => {
                 let (path, size) = demo_file(&self.media_path, id);
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
+                    partial: None,
                     id,
                     path: Some(path),
                     size,
@@ -235,6 +257,7 @@ impl Demo {
                 }
                 let (_, size) = demo_file(&self.media_path, id);
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
+                    partial: None,
                     id,
                     path: None,
                     size,
@@ -278,6 +301,11 @@ impl Demo {
                     if let Event::NewerMessagesLoaded { messages: tail, .. } = &mut newer {
                         messages.extend(tail.drain(..).take(25));
                     }
+                    // Both paged halves exclude their cursor. An around response must
+                    // include the anchor itself, including a round we return to from a float.
+                    if let Some(message) = self.lookup(chat, anchor) {
+                        messages.push(message);
+                    }
                     messages.sort_by_key(|m| m.id);
                     while messages.len() > 50 {
                         messages.remove(0);
@@ -320,6 +348,165 @@ impl Demo {
         }
         Ok(())
     }
+    fn download_video(
+        &self,
+        id: i32,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(), tg_core::CommandError> {
+        use std::io::{Seek, SeekFrom, Write};
+        let Some(sink) = self.sink.clone() else {
+            return Ok(());
+        };
+        let bytes: &'static [u8] = include_bytes!("../assets/demo-video.mp4");
+        let size = bytes.len() as u64;
+        let offset = (offset / tg_core::STREAM_PART * tg_core::STREAM_PART).min(size);
+        let end = if limit == 0 {
+            size
+        } else {
+            offset.saturating_add(limit).min(size)
+        };
+        let mut windows = self.windows.lock().map_err(|_| action_error())?;
+        let resume = match windows.get_mut(&id) {
+            Some(w) if w.offset == offset && !w.cancelled.load(Ordering::Acquire) => {
+                // The same offset again extends the download, as TDLib does.
+                w.end = w.end.max(end);
+                if w.running {
+                    return Ok(());
+                }
+                Some((w.cancelled.clone(), w.cursor))
+            }
+            _ => None,
+        };
+        if self
+            .video_workers
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < 4).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return Err(action_error());
+        }
+        let slot = VideoSlot(self.video_workers.clone());
+        let (cancelled, start) = match resume {
+            Some(resume) => resume,
+            None => {
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let mut downloads = self.downloads.lock().map_err(|_| action_error())?;
+                if let Some(old) = downloads.remove(&id) {
+                    old.store(true, Ordering::Release);
+                }
+                if downloads.len() >= 8 {
+                    return Err(action_error());
+                }
+                downloads.insert(id, cancelled.clone());
+                windows.insert(
+                    id,
+                    DemoWindow {
+                        offset,
+                        cursor: offset,
+                        end,
+                        running: false,
+                        cancelled: cancelled.clone(),
+                    },
+                );
+                (cancelled, offset)
+            }
+        };
+        if let Some(w) = windows.get_mut(&id) {
+            w.running = true;
+        }
+        drop(windows);
+        let path = self.media_path.with_extension("stream.mp4");
+        let downloads = self.downloads.clone();
+        let windows = self.windows.clone();
+        std::thread::Builder::new()
+            .name("tg-demo-video-range".into())
+            .spawn(move || {
+                let _slot = slot;
+                let mut output = match std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(&path)
+                {
+                    Ok(f) => f,
+                    Err(_) => {
+                        sink.post(Event::FileDownloadFailed(id));
+                        return;
+                    }
+                };
+                let mut cursor = start;
+                while !cancelled.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
+                    // Stop at the window's end under the lock, so an extension cannot be lost.
+                    let stop = match windows.lock() {
+                        Ok(mut windows) => match windows.get_mut(&id) {
+                            Some(w) if Arc::ptr_eq(&w.cancelled, &cancelled) => {
+                                let stop = cursor >= w.end;
+                                w.running = !stop;
+                                stop
+                            }
+                            _ => true,
+                        },
+                        Err(_) => true,
+                    };
+                    if stop {
+                        break;
+                    }
+                    let end = (cursor + tg_core::STREAM_PART).min(size);
+                    if output
+                        .seek(SeekFrom::Start(cursor))
+                        .and_then(|_| output.write_all(&bytes[cursor as usize..end as usize]))
+                        .is_err()
+                    {
+                        sink.post(Event::FileDownloadFailed(id));
+                        break;
+                    }
+                    cursor = end;
+                    if let Ok(mut windows) = windows.lock()
+                        && let Some(w) = windows.get_mut(&id)
+                        && Arc::ptr_eq(&w.cancelled, &cancelled)
+                    {
+                        w.cursor = cursor;
+                    }
+                    let completed = offset == 0 && cursor == size;
+                    sink.post(Event::FileUpdated(tg_core::MediaFile {
+                        partial: Some(tg_core::StreamFile {
+                            id,
+                            size,
+                            path: Some(path.clone()),
+                            offset,
+                            prefix: cursor - offset,
+                            completed,
+                        }),
+                        id,
+                        size,
+                        downloaded: cursor - offset,
+                        downloading: !completed,
+                        path: completed.then(|| path.clone()),
+                    }));
+                }
+                if let Ok(mut windows) = windows.lock()
+                    && let Some(w) = windows.get_mut(&id)
+                    && Arc::ptr_eq(&w.cancelled, &cancelled)
+                {
+                    w.running = false;
+                }
+                if let Ok(mut downloads) = downloads.lock()
+                    && downloads
+                        .get(&id)
+                        .is_some_and(|flag| Arc::ptr_eq(flag, &cancelled))
+                {
+                    downloads.remove(&id);
+                }
+            })
+            .map_err(|_| action_error())?;
+        Ok(())
+    }
     fn download(&self, id: i32) -> Result<(), tg_core::CommandError> {
         let Some(sink) = self.sink.clone() else {
             return Ok(());
@@ -337,6 +524,7 @@ impl Demo {
         }
         let (path, size) = demo_file(&self.media_path, id);
         sink.post(Event::FileUpdated(tg_core::MediaFile {
+            partial: None,
             id,
             path: None,
             size,
@@ -350,6 +538,7 @@ impl Demo {
                 std::thread::sleep(Duration::from_millis(200));
                 if !cancelled.load(Ordering::Acquire) {
                     sink.post(Event::FileUpdated(tg_core::MediaFile {
+                        partial: None,
                         id,
                         path: Some(path),
                         size,
@@ -503,8 +692,10 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                     (preview.width, preview.height) = (426, 240);
                     message.photo = Some(preview);
                     message.video = Some(tg_core::Video {
+                        supports_streaming: true,
                         file: tg_core::MediaFile {
-                            size: 0,
+                            partial: None,
+                            size: include_bytes!("../assets/demo-video.mp4").len() as u64,
                             downloaded: 0,
                             downloading: false,
                             id: VIDEO_FILE_ID + n as i32,
@@ -559,6 +750,7 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
 fn demo_photo(id: i32) -> tg_core::Photo {
     tg_core::Photo {
         file: tg_core::MediaFile {
+            partial: None,
             size: 0,
             downloaded: 0,
             downloading: false,
@@ -586,6 +778,10 @@ pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
             "webp",
             include_bytes!("../assets/demo-sticker.webp").as_slice(),
         ),
+        (
+            "round.mp4",
+            include_bytes!("../assets/demo-round.mp4").as_slice(),
+        ),
         ("ogg", include_bytes!("../assets/demo-voice.ogg").as_slice()),
         ("txt", include_bytes!("../assets/demo-file.txt").as_slice()),
         ("pdf", include_bytes!("../assets/demo-file.pdf").as_slice()),
@@ -599,7 +795,16 @@ pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
     Ok(path)
 }
 pub(crate) fn cleanup_media(path: &std::path::Path) -> std::io::Result<()> {
-    for ext in ["mp4", "webp", "ogg", "txt", "pdf", "ps1"] {
+    for ext in [
+        "stream.mp4",
+        "round.mp4",
+        "mp4",
+        "webp",
+        "ogg",
+        "txt",
+        "pdf",
+        "ps1",
+    ] {
         let _ = std::fs::remove_file(path.with_extension(ext));
     }
     std::fs::remove_file(path)
@@ -889,6 +1094,7 @@ fn demo_attachment(m: &mut Message, kind: i64) {
     m.text.clear();
     m.entities.clear();
     let file = |base| MediaFile {
+        partial: None,
         id: base + n as i32,
         path: None,
         size: 0,
@@ -899,10 +1105,10 @@ fn demo_attachment(m: &mut Message, kind: i64) {
         15 | 16 => {
             m.photo = Some(demo_photo((100000 + n) as i32));
             let mut f = file(VIDEO_FILE_ID);
-            f.size = include_bytes!("../assets/demo-video.mp4").len() as u64;
+            f.size = include_bytes!("../assets/demo-round.mp4").len() as u64;
             Attachment::Round(tg_core::Round {
                 file: f,
-                duration: 4,
+                duration: 12,
                 length: 240,
                 viewed: kind == 15,
             })
@@ -969,6 +1175,11 @@ fn demo_file(base: &std::path::Path, id: i32) -> (std::path::PathBuf, u64) {
         }
     } else if id >= 2_000_000 {
         ("ogg", include_bytes!("../assets/demo-voice.ogg").len())
+    } else if id >= VIDEO_FILE_ID && matches!((id - VIDEO_FILE_ID) % 20, 15 | 16) {
+        (
+            "round.mp4",
+            include_bytes!("../assets/demo-round.mp4").len(),
+        )
     } else if id >= VIDEO_FILE_ID {
         ("mp4", include_bytes!("../assets/demo-video.mp4").len())
     } else {
@@ -1000,5 +1211,12 @@ mod round_tests {
                 assert!(m.photo.is_some() && m.attachment.is_none());
             }
         }
+    }
+}
+
+struct VideoSlot(Arc<AtomicUsize>);
+impl Drop for VideoSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
