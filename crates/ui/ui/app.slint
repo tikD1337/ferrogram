@@ -253,9 +253,6 @@ export component AppWindow inherits Window {
                         Rectangle { width: 232px; height: 232px; background: #ffffff; border-radius: 12px; Image { x: 6px; y: 6px; width: 220px; height: 220px; source: root.qr; image-fit: contain; } }
                     }
                     Text { text: "Open Telegram on your phone, go to Settings > Devices > Link Desktop Device and scan this code."; color: Theme.muted; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
-                    HorizontalLayout { alignment: center;
-                        Link { width: 220px; text: "Log in by phone number"; enabled: !root.blocked; clicked => { root.auth-input = ""; root.auth-step = 2; } }
-                    }
                 }
                 if root.auth-step >= 2: HorizontalLayout { alignment: center;
                     VerticalLayout {

@@ -553,10 +553,12 @@ impl State {
                     self.sync_media(window);
                 }
                 match auth {
+                    // Phone entry first. A QR request moves TDLib to the other-device state, where
+                    // it rejects phone numbers (AuthManager::set_phone_number) until a logOut, so
+                    // the QR code is only requested when the user asks for it.
                     AuthState::WaitPhoneNumber => {
-                        window.set_auth_step(1);
-                        window.set_auth_title("Scan to sign in".into());
-                        self.send(window, Command::RequestQrSignIn);
+                        window.set_auth_step(2);
+                        window.set_auth_title("Sign in to Telegram".into());
                     }
                     AuthState::WaitOtherDevice { link } => {
                         window.set_auth_step(1);
