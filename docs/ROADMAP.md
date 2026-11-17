@@ -142,3 +142,36 @@ work, so the client eventually covers what Telegram Desktop offers:
 Next: reactions, pinning, message links and selection; a clear recovery screen when the
 database key cannot be unlocked; switching from QR back to phone sign-in.
 
+
+## Security work (2026-11-17)
+
+A review of [SECURITY.md](SECURITY.md) against the code. Implemented today: the database key is
+wrapped by a non-exportable TPM key and DPAPI (threat T1, copied files), and our copy of the key is
+zeroed after it is handed to TDLib. The TPM key is not bound to boot state (PCRs), a PIN or a user
+gesture, so any process running as the same Windows user can ask the TPM to unwrap it. Planned,
+in order of value for cost:
+
+1. **Process hardening (T3, client running).** A process DACL that denies memory reads and thread
+   injection to other processes of the same user; `SetProcessMitigationPolicy` (no dynamic code,
+   no extension points, signed DLLs only, as far as TDLib and the renderer allow);
+   `SetDefaultDllDirectories` for a safe DLL search order. Measure that the client and TDLib still
+   start and that RAM and CPU do not change.
+2. **Lock the key page in memory.** SECURITY.md says the key page is locked with `VirtualLock`; the
+   code only zeroes it. Implement it, or correct the document.
+3. **Recovery when the key cannot be unlocked.** Today a TPM refusal left a bare error code. Show a
+   clear screen instead: move the old key and database to a dated backup folder and sign in again;
+   the chats come back from the server. Nothing is deleted without the user's confirmation.
+4. **Master password (T2, client closed).** Optional, off by default (decided 2026-11-16). Argon2id
+   from an audited RustCrypto implementation, wrapping added as the third layer; asked at start.
+   It is the only measure that stops malware running as the same user from unwrapping the key.
+5. **Windows Hello as an alternative to the password (T2).** Research first: the Windows Hello key
+   API signs and does not decrypt. Evaluate deriving a key from a signature of a fixed challenge, or
+   a TPM key that requires user presence, against published attacks before choosing.
+6. **Automatic locking.** An idle timer that removes keys from memory: interface-only lock by
+   default (notifications keep working), full lock (TDLib shut down) as a setting.
+7. **Copy test.** A repeatable test that a copied data folder does not open in another Windows
+   profile or on another computer (T1), and that a wrong key never opens the database.
+
+Out of scope, as decided in SECURITY.md: a Chrome-style SYSTEM service for application binding,
+and anti-debugging or obfuscation. Malware with administrator or kernel rights (T4) cannot be
+stopped by any user-mode client.
