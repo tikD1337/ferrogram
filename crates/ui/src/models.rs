@@ -163,12 +163,18 @@ const SERVICE_PAD_Y: f32 = 4.0;
 const MAX_ALBUM: usize = 10;
 
 /// Consecutive messages with one non-zero album ID form one row, at most MAX_ALBUM each.
+/// Photos and videos of one album share a grid in one bubble. Files, voice notes and other
+/// attachments sent as an album stay separate rows, each with its own card and actions.
+fn in_grid(message: &Message) -> bool {
+    message.album != 0 && message.attachment.is_none()
+}
 pub(crate) fn groups(messages: &[Message]) -> Vec<Range<usize>> {
     let mut groups: Vec<Range<usize>> = Vec::new();
     for (i, message) in messages.iter().enumerate() {
         match groups.last_mut() {
             Some(last)
-                if message.album != 0
+                if in_grid(message)
+                    && in_grid(&messages[last.start])
                     && messages[last.start].album == message.album
                     && last.len() < MAX_ALBUM =>
             {
@@ -798,7 +804,7 @@ impl Feed {
         }
     }
     fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
-        if messages[range.start].album == 0 || range.len() == MAX_ALBUM {
+        if !in_grid(&messages[range.start]) || range.len() == MAX_ALBUM {
             return true;
         }
         let h = self.history.borrow();
@@ -1179,6 +1185,35 @@ mod feed_tests {
             String::new()
         };
         m
+    }
+
+    #[test]
+    fn files_sent_as_an_album_stay_separate_rows() {
+        let file = |n: i64| {
+            let mut m = message(n);
+            m.album = 91;
+            m.text = String::new();
+            m.attachment = Some(tg_core::Attachment::Document(tg_core::Document {
+                file: tg_core::MediaFile {
+                    size: 4096,
+                    downloaded: 0,
+                    downloading: false,
+                    id: n as i32,
+                    path: None,
+                },
+                name: format!("file-{n}.pdf"),
+            }));
+            m
+        };
+        let messages = vec![
+            file(30),
+            file(31),
+            file(32),
+            album_item(33, 92),
+            album_item(34, 92),
+        ];
+        // Each file keeps its own card (and key); the photos still share one grid.
+        assert_eq!(groups(&messages), vec![0..1, 1..2, 2..3, 3..5]);
     }
 
     #[test]

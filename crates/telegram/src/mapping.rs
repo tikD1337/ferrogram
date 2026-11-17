@@ -465,11 +465,20 @@ impl Decoder {
                             },
                             256,
                         ),
+                        // A caption when there is one; otherwise what the attachment is
+                        // ("Sticker", "Voice message", the file name), never an empty quote.
                         preview: truncate(
-                            if let Some(tg_core::Attachment::Emoji(s)) = &m.attachment {
-                                s.emoji.clone()
-                            } else {
-                                m.text.replace(['\r', '\n'], " ")
+                            {
+                                let caption = m.text.replace(['\r', '\n'], " ");
+                                if caption.trim().is_empty()
+                                    || matches!(m.attachment, Some(tg_core::Attachment::Emoji(_)))
+                                {
+                                    attachment_preview(&value["content"]).unwrap_or_else(|| {
+                                        content_label(&value["content"]).to_owned()
+                                    })
+                                } else {
+                                    caption
+                                }
                             },
                             256,
                         ),

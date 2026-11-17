@@ -569,6 +569,39 @@ fn replied_message_resolves_names_without_a_retained_engine_history() {
 }
 
 #[test]
+fn replies_to_captionless_attachments_keep_a_description() {
+    use serde_json::json;
+    let file = json!({"id":42,"size":4096,"local":{"is_downloading_completed":false}});
+    let cases = [
+        (
+            json!({"@type":"messageDocument","caption":{"text":"","entities":[]},
+                "document":{"file_name":"report.pdf","mime_type":"application/pdf","document":file}}),
+            "report.pdf",
+        ),
+        (
+            json!({"@type":"messageVoiceNote","caption":{"text":"","entities":[]},"is_listened":true,
+                "voice_note":{"duration":3,"waveform":"","mime_type":"audio/ogg","voice":file}}),
+            "Voice message",
+        ),
+        (
+            json!({"@type":"messageDocument","caption":{"text":"Quarterly\nnumbers","entities":[]},
+                "document":{"file_name":"report.pdf","mime_type":"application/pdf","document":file}}),
+            "Quarterly numbers",
+        ),
+    ];
+    for (content, expected) in cases {
+        let value = json!({"@type":"message","id":20968374272_i64,"chat_id":7,"date":10,
+            "is_outgoing":true,"content":content,
+            "@extra":{"command":"replied","chat":7,"message":20971520000_i64}});
+        let events = decode(&mut Decoder::default(), &value.to_string());
+        assert!(
+            matches!(&events[0], Event::ReplyResolved {reply:Some(r),..} if r.preview == expected),
+            "{expected}: {events:?}"
+        );
+    }
+}
+
+#[test]
 fn media_without_caption_previews_its_label_not_an_empty_line() {
     let events = decode(
         &mut Decoder::default(),
