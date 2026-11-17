@@ -38,6 +38,10 @@ pub enum CommandKind {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Command {
+    DownloadRange {
+        file: i32,
+        offset: u64,
+    },
     /// A user-requested voice/document download, above viewport photo prefetch priority.
     DownloadFileUrgent(i32),
     OpenMessageContent {

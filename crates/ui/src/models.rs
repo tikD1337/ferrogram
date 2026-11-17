@@ -1035,6 +1035,7 @@ mod feed_tests {
             video: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
                 file: tg_core::MediaFile {
+                    partial: None,
                     size: 0,
                     downloaded: 0,
                     downloading: false,
@@ -1169,6 +1170,7 @@ mod feed_tests {
         m.album = album;
         m.photo = Some(tg_core::Photo {
             file: tg_core::MediaFile {
+                partial: None,
                 size: 0,
                 downloaded: 0,
                 downloading: false,
@@ -1195,6 +1197,7 @@ mod feed_tests {
             m.text = String::new();
             m.attachment = Some(tg_core::Attachment::Document(tg_core::Document {
                 file: tg_core::MediaFile {
+                    partial: None,
                     size: 4096,
                     downloaded: 0,
                     downloading: false,

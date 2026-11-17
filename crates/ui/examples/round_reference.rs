@@ -82,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.attachment_file(
                     &w,
                     &tg_core::MediaFile {
+                        partial: None,
                         id: 1_000_000 + 19996,
                         path: None,
                         size: 1000,

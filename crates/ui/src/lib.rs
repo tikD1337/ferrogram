@@ -7,6 +7,7 @@ mod clock;
 mod history;
 mod media;
 mod models;
+mod streaming;
 mod text;
 mod viewport;
 pub use bridge::EventSink;
@@ -70,6 +71,8 @@ struct State {
     video: RefCell<VideoFn>,
     /// The video in the player: its TDLib file ID and the local path once downloaded.
     playing: RefCell<Option<(i32, Option<PathBuf>)>>,
+    streaming: RefCell<Option<streaming::ViewerStream>>,
+    stream_serial: Cell<u64>,
     viewer: MediaViewer,
     /// Feed position (from the top) that wheel scrolling eases towards, if any.
     scroll_target: Cell<Option<f32>>,
@@ -92,11 +95,18 @@ impl State {
         }
     }
     fn video(&self, window: &AppWindow, request: VideoRequest) {
+        let streaming_request = matches!(
+            &request,
+            VideoRequest::OpenStream { .. } | VideoRequest::Availability { .. }
+        );
         let inline = matches!(
             &request,
             VideoRequest::OpenRound { .. } | VideoRequest::RoundViewport(_) | VideoRequest::Move(_)
         );
         if let Err(error) = (self.video.borrow())(request) {
+            if streaming_request {
+                self.close_video(window);
+            }
             if inline {
                 self.stop_voice(window);
             }
@@ -132,6 +142,8 @@ impl State {
         self.viewer.set_failed(false);
         self.viewer.set_playing(false);
         self.viewer.set_progress(0.0);
+        self.viewer.set_download_start(0.0);
+        self.viewer.set_download_end(0.0);
         self.viewer
             .set_time(format!("0:00 / {}", clock::duration(video.duration)).into());
         // The native window must exist before the player can attach its child window.
@@ -152,7 +164,9 @@ impl State {
             );
         }
         *self.playing.borrow_mut() = Some((video.file.id, video.file.path.clone()));
-        if let Some(path) = video.file.path {
+        if video.supports_streaming && video.file.path.is_none() && video.file.size > 0 {
+            self.start_stream(window, &video);
+        } else if let Some(path) = video.file.path {
             self.start_video(window, path);
         } else {
             self.viewer.set_loading(true);
@@ -164,8 +178,9 @@ impl State {
         }
     }
     fn close_video(&self, window: &AppWindow) {
+        let streaming = self.streaming.borrow_mut().take().is_some();
         if let Some((id, path)) = self.playing.borrow_mut().take() {
-            if path.is_none() {
+            if streaming || path.is_none() {
                 self.send(window, Command::CancelDownload(id));
             }
             self.video(window, VideoRequest::Close);
@@ -642,6 +657,7 @@ impl State {
             }
             Event::FileUpdated(file) => {
                 self.attachment_file(window,&file);
+                if self.stream_file(window,&file){return;}
                 let ready = match self.playing.borrow_mut().as_mut() {
                     Some((id, path)) if *id == file.id && path.is_none() && file.path.is_some() => {
                         path.clone_from(&file.path);
@@ -657,15 +673,26 @@ impl State {
                 }
             }
             Event::MessageContentOpened {chat,message}=>self.content_opened(window,chat,message),
-            Event::FileDownloadFailed(id)=>self.download_failed(window,id),
+            Event::FileDownloadFailed(id)=>{
+                let streaming=self.streaming.borrow().as_ref().is_some_and(|s|s.file.id==id);
+                if streaming {
+                    self.close_video(window);
+                    window.set_error("Could not download the video.".into());
+                } else { self.download_failed(window,id); }
+            },
             Event::FileOperationFailed=>window.set_error("Could not open or locate the file. Internet-zone marking is required before opening.".into()),
+            Event::VideoState(state) if state.stream.is_some()=>self.stream_status(window,state.stream.unwrap_or_default()),
             Event::VideoState(state) if state.audio_token.is_some()=>self.voice_state(window,state),
             Event::VideoState(state) if state.dismissed => self.close_video(window),
             Event::VideoState(state) => {
-                if self.viewer.window().is_visible() {
+                if state.failed && self.streaming.borrow().as_ref().is_some_and(|s|Some(s.token)==state.stream_token) {
+                    self.close_video(window);window.set_error("This video cannot be streamed.".into());return;
+                }
+                if self.viewer.window().is_visible() && self.stream_playback(state) {
                     let duration = state.duration_ms.max(1);
                     self.viewer.set_playing(state.playing);
                     self.viewer.set_failed(state.failed);
+                    if state.duration_ms>0 {
                     self.viewer
                         .set_progress(state.position_ms as f32 / duration as f32);
                     self.viewer.set_time(
@@ -676,6 +703,7 @@ impl State {
                         )
                         .into(),
                     );
+                    }
                 }
             }
             Event::ChatListChanged(change) => {
@@ -895,6 +923,8 @@ impl Ui {
                 })
             })),
             playing: RefCell::default(),
+            streaming: RefCell::default(),
+            stream_serial: Cell::new(0),
             viewer: MediaViewer::new()?,
             scroll_target: Cell::new(None),
             scroll_timer: slint::Timer::default(),
@@ -1004,7 +1034,8 @@ impl Ui {
         state.viewer.on_area_changed(move || {
             if let (Some(w), Some(v)) = (main.upgrade(), viewer.upgrade())
                 && v.window().is_visible()
-                && s.playing.borrow().as_ref().is_some_and(|p| p.1.is_some())
+                && (s.streaming.borrow().is_some()
+                    || s.playing.borrow().as_ref().is_some_and(|p| p.1.is_some()))
             {
                 s.video(&w, VideoRequest::Move(State::video_rect(&v)));
             }
@@ -1321,6 +1352,8 @@ impl Ui {
         let ran = self.window.run();
         // Release producers that may wait for a drain that will never come again.
         self.sink.close();
+        self.state.close_video(&self.window);
+        self.state.stop_voice(&self.window);
         if let Some(path) = &self.check {
             let window = &self.window;
             self.state

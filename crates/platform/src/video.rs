@@ -14,6 +14,7 @@ use crate::video_ffi::{Backdrop, ChildWindow, Message, Report, run};
 pub struct Player {
     sender: mpsc::SyncSender<Message>,
     audio: Cell<bool>,
+    stream: RefCell<Option<std::sync::Arc<crate::streaming::Reader>>>,
     window: RefCell<Option<ChildWindow>>,
     backdrop: RefCell<Option<Backdrop>>,
     report: Report,
@@ -50,6 +51,7 @@ impl Player {
             Ok(Ok(())) => Ok(Self {
                 sender,
                 audio: Cell::new(false),
+                stream: RefCell::new(None),
                 window: RefCell::new(None),
                 backdrop: RefCell::new(None),
                 report,
@@ -74,6 +76,44 @@ impl Player {
                 .map_err(|_| Error("video queue", 0))
         };
         match request {
+            VideoRequest::Availability { file, token } => {
+                if let Some(stream) = self.stream.borrow().as_ref()
+                    && stream.file == file.id
+                    && stream.token == token
+                {
+                    stream.update(file);
+                }
+                Ok(())
+            }
+            VideoRequest::OpenStream {
+                file,
+                window,
+                rect,
+                token,
+            } => {
+                self.close();
+                let child = ChildWindow::create(window, rect)?;
+                let handle = child.handle();
+                *self.window.borrow_mut() = Some(child);
+                let report = self.report.clone();
+                let reader = crate::streaming::Reader::new(
+                    file,
+                    token,
+                    std::sync::Arc::new(move |s| {
+                        report(VideoState {
+                            stream: Some(s),
+                            ..Default::default()
+                        });
+                    }),
+                );
+                *self.stream.borrow_mut() = Some(reader.clone());
+                queued(Message::OpenStream {
+                    reader,
+                    window: handle,
+                    width: rect.width,
+                    height: rect.height,
+                })
+            }
             VideoRequest::Open { path, window, rect } => {
                 self.close();
                 let child = ChildWindow::create(window, rect)?;
@@ -150,6 +190,9 @@ impl Player {
     }
 
     fn close(&self) {
+        if let Some(stream) = self.stream.borrow_mut().take() {
+            stream.close();
+        }
         let child = self.window.borrow_mut().take();
         if !self.audio.replace(false) && child.is_none() {
             return;

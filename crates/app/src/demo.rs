@@ -22,6 +22,7 @@ pub(crate) struct Demo {
     chats: Arc<std::sync::Mutex<Vec<Chat>>>,
     // At most two delayed page workers, one per direction; no retained full history.
     pending: Arc<AtomicUsize>,
+    video_workers: Arc<AtomicUsize>,
     downloads: Arc<std::sync::Mutex<std::collections::BTreeMap<i32, Arc<AtomicBool>>>>,
 }
 impl Demo {
@@ -35,6 +36,7 @@ impl Demo {
             chats: Arc::default(),
             pending: Arc::default(),
             downloads: Arc::default(),
+            video_workers: Arc::default(),
         }
     }
     pub fn seed(&mut self) {
@@ -217,9 +219,14 @@ impl Demo {
                     sink.post(Event::NewMessage(m));
                 }
             }
+            Command::DownloadRange { file, offset } => self.download_video(file, offset)?,
+            Command::DownloadFile(id) if (VIDEO_FILE_ID..2_000_000).contains(&id) => {
+                self.download_video(id, 0)?
+            }
             Command::DownloadFile(id) => {
                 let (path, size) = demo_file(&self.media_path, id);
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
+                    partial: None,
                     id,
                     path: Some(path),
                     size,
@@ -235,6 +242,7 @@ impl Demo {
                 }
                 let (_, size) = demo_file(&self.media_path, id);
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
+                    partial: None,
                     id,
                     path: None,
                     size,
@@ -320,6 +328,97 @@ impl Demo {
         }
         Ok(())
     }
+    fn download_video(&self, id: i32, offset: u64) -> Result<(), tg_core::CommandError> {
+        use std::io::{Seek, SeekFrom, Write};
+        let Some(sink) = self.sink.clone() else {
+            return Ok(());
+        };
+        if self
+            .video_workers
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < 4).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return Err(action_error());
+        }
+        let slot = VideoSlot(self.video_workers.clone());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut downloads = self.downloads.lock().map_err(|_| action_error())?;
+            if let Some(old) = downloads.remove(&id) {
+                old.store(true, Ordering::Release);
+            }
+            if downloads.len() >= 8 {
+                return Err(action_error());
+            }
+            downloads.insert(id, cancelled.clone());
+        }
+        let path = self.media_path.with_extension("stream.mp4");
+        let downloads = self.downloads.clone();
+        std::thread::Builder::new()
+            .name("tg-demo-video-range".into())
+            .spawn(move || {
+                let _slot = slot;
+                let bytes = include_bytes!("../assets/demo-video.mp4");
+                let size = bytes.len() as u64;
+                let offset = (offset / tg_core::STREAM_PART * tg_core::STREAM_PART).min(size);
+                let mut output = match std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(&path)
+                {
+                    Ok(f) => f,
+                    Err(_) => {
+                        sink.post(Event::FileDownloadFailed(id));
+                        return;
+                    }
+                };
+                let mut cursor = offset;
+                while cursor < size && !cancelled.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let end = (cursor + tg_core::STREAM_PART).min(size);
+                    if output
+                        .seek(SeekFrom::Start(cursor))
+                        .and_then(|_| output.write_all(&bytes[cursor as usize..end as usize]))
+                        .is_err()
+                    {
+                        sink.post(Event::FileDownloadFailed(id));
+                        break;
+                    }
+                    cursor = end;
+                    let completed = offset == 0 && cursor == size;
+                    sink.post(Event::FileUpdated(tg_core::MediaFile {
+                        partial: Some(tg_core::StreamFile {
+                            id,
+                            size,
+                            path: Some(path.clone()),
+                            offset,
+                            prefix: cursor - offset,
+                            completed,
+                        }),
+                        id,
+                        size,
+                        downloaded: cursor - offset,
+                        downloading: !completed,
+                        path: completed.then(|| path.clone()),
+                    }));
+                }
+                if let Ok(mut downloads) = downloads.lock()
+                    && downloads
+                        .get(&id)
+                        .is_some_and(|flag| Arc::ptr_eq(flag, &cancelled))
+                {
+                    downloads.remove(&id);
+                }
+            })
+            .map_err(|_| action_error())?;
+        Ok(())
+    }
     fn download(&self, id: i32) -> Result<(), tg_core::CommandError> {
         let Some(sink) = self.sink.clone() else {
             return Ok(());
@@ -337,6 +436,7 @@ impl Demo {
         }
         let (path, size) = demo_file(&self.media_path, id);
         sink.post(Event::FileUpdated(tg_core::MediaFile {
+            partial: None,
             id,
             path: None,
             size,
@@ -350,6 +450,7 @@ impl Demo {
                 std::thread::sleep(Duration::from_millis(200));
                 if !cancelled.load(Ordering::Acquire) {
                     sink.post(Event::FileUpdated(tg_core::MediaFile {
+                        partial: None,
                         id,
                         path: Some(path),
                         size,
@@ -503,8 +604,10 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                     (preview.width, preview.height) = (426, 240);
                     message.photo = Some(preview);
                     message.video = Some(tg_core::Video {
+                        supports_streaming: true,
                         file: tg_core::MediaFile {
-                            size: 0,
+                            partial: None,
+                            size: include_bytes!("../assets/demo-video.mp4").len() as u64,
                             downloaded: 0,
                             downloading: false,
                             id: VIDEO_FILE_ID + n as i32,
@@ -559,6 +662,7 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
 fn demo_photo(id: i32) -> tg_core::Photo {
     tg_core::Photo {
         file: tg_core::MediaFile {
+            partial: None,
             size: 0,
             downloaded: 0,
             downloading: false,
@@ -599,7 +703,7 @@ pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
     Ok(path)
 }
 pub(crate) fn cleanup_media(path: &std::path::Path) -> std::io::Result<()> {
-    for ext in ["mp4", "webp", "ogg", "txt", "pdf", "ps1"] {
+    for ext in ["stream.mp4", "mp4", "webp", "ogg", "txt", "pdf", "ps1"] {
         let _ = std::fs::remove_file(path.with_extension(ext));
     }
     std::fs::remove_file(path)
@@ -889,6 +993,7 @@ fn demo_attachment(m: &mut Message, kind: i64) {
     m.text.clear();
     m.entities.clear();
     let file = |base| MediaFile {
+        partial: None,
         id: base + n as i32,
         path: None,
         size: 0,
@@ -1000,5 +1105,12 @@ mod round_tests {
                 assert!(m.photo.is_some() && m.attachment.is_none());
             }
         }
+    }
+}
+
+struct VideoSlot(Arc<AtomicUsize>);
+impl Drop for VideoSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }

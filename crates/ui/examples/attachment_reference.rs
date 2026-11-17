@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             "folder" => state.attachment_click(&w, &id.to_string(), 2, 0.0),
                             "file-progress" => sink.post(Event::FileUpdated(tg_core::MediaFile {
+                                partial: None,
                                 id: 3_000_000 + 19988,
                                 path: None,
                                 size: 1000,

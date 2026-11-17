@@ -8,7 +8,10 @@ mod files;
 mod hardening;
 pub use files::Files;
 #[allow(unsafe_code)]
+mod byte_stream;
+#[allow(unsafe_code)]
 mod files_ffi;
+mod streaming;
 mod video;
 #[allow(unsafe_code)]
 mod video_ffi;

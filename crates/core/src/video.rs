@@ -5,6 +5,7 @@ use std::path::PathBuf;
 /// TDLib video file of a message. The preview frame travels as the message's `photo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Video {
+    pub supports_streaming: bool,
     pub file: crate::MediaFile,
     /// Seconds, as reported by Telegram.
     pub duration: u32,
@@ -33,6 +34,16 @@ pub enum VideoRequest {
         bar: i32,
     },
     /// `window` is the native handle of the main window (an `HWND` on Windows).
+    OpenStream {
+        file: crate::StreamFile,
+        window: isize,
+        rect: VideoRect,
+        token: u64,
+    },
+    Availability {
+        file: crate::StreamFile,
+        token: u64,
+    },
     Open {
         path: PathBuf,
         window: isize,
@@ -62,6 +73,10 @@ pub enum VideoRequest {
 /// Reported on player events only (time updates come from the player, no polling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VideoState {
+    pub stream: Option<crate::StreamStatus>,
+    pub stream_token: Option<u64>,
+    pub buffering: bool,
+    pub first_frame: bool,
     /// Correlates voice/round callbacks; late states cannot update another message/video.
     pub audio_token: Option<u64>,
     pub position_ms: u32,

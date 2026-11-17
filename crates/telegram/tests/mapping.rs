@@ -765,3 +765,23 @@ fn round_size_is_bounded_and_emoji_quotes_preserve_the_emoji() {
     };
     assert_eq!(m.reply.as_ref().unwrap().preview, "\u{1f642}");
 }
+
+#[test]
+fn streamable_video_maps_partial_path_and_contiguous_range() {
+    use serde_json::json;
+    let mut d = Decoder::default();
+    for supports in [true, false] {
+        let events=decode(&mut d,&json!({"@type":"updateNewMessage","message":{"id":20971520000_i64,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageVideo","video":{"duration":12,"width":426,"height":240,"supports_streaming":supports,"video":{"id":42,"size":8000000,"local":{"path":"C:/demo/partial.mp4","is_downloading_completed":false,"download_offset":2097152,"downloaded_prefix_size":131072,"downloaded_size":262144}}}}}}).to_string());
+        let Event::IncomingMessage(m) = &events[0] else {
+            panic!("video")
+        };
+        let v = m.video.as_ref().unwrap();
+        assert_eq!(v.supports_streaming, supports);
+        assert!(v.file.path.is_none());
+        let partial = v.file.partial.as_ref().unwrap();
+        assert_eq!(partial.offset, 2097152);
+        assert_eq!(partial.prefix, 131072);
+        assert!(partial.path.is_some());
+        assert!(!partial.completed);
+    }
+}

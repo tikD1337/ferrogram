@@ -278,6 +278,7 @@ pub struct Photo {
 /// TDLib-managed local file; paths are at most 4 KiB and are never logged.
 #[derive(Clone, PartialEq, Eq)]
 pub struct MediaFile {
+    pub partial: Option<crate::StreamFile>,
     pub size: u64,
     pub downloaded: u64,
     pub downloading: bool,

@@ -32,6 +32,13 @@ use crate::Error;
 
 /// Messages for the player thread: requests from the UI and engine events.
 pub(crate) enum Message {
+    OpenStream {
+        reader: std::sync::Arc<crate::streaming::Reader>,
+        window: isize,
+        width: i32,
+        height: i32,
+    },
+
     Open {
         path: std::path::PathBuf,
         window: isize,
@@ -51,25 +58,39 @@ pub(crate) enum Message {
     Seek(f64),
     /// The acknowledgement lets the UI thread destroy the window only after the engine stopped.
     Close(mpsc::SyncSender<()>),
-    Event(u32),
+    // Keep the emitting engine identity: cancelled reads may post a late native callback.
+    Event {
+        event: u32,
+        generation: u64,
+    },
     Quit,
 }
 
 #[implement(IMFMediaEngineNotify)]
 struct Notify {
+    generation: u64,
     sender: mpsc::SyncSender<Message>,
 }
 
 impl IMFMediaEngineNotify_Impl for Notify_Impl {
     fn EventNotify(&self, event: u32, _param1: usize, _param2: u32) -> windows::core::Result<()> {
         // Bounded queue: a dropped time update is replaced by the next one.
-        let _ = self.sender.try_send(Message::Event(event));
+        let _ = self.sender.try_send(Message::Event {
+            event,
+            generation: self.generation,
+        });
         Ok(())
     }
 }
 
 struct Engine {
     audio_token: Option<u64>,
+    stream: Option<crate::byte_stream::Source>,
+    stream_token: Option<u64>,
+    pending_seek: std::cell::Cell<Option<f64>>,
+    buffering: std::cell::Cell<bool>,
+    seek_wait: std::cell::Cell<bool>,
+    play_intent: std::cell::Cell<bool>,
     engine: IMFMediaEngine,
     extended: Option<IMFMediaEngineEx>,
 }
@@ -80,6 +101,15 @@ impl Engine {
         path: &Path,
         window: isize,
         audio_token: Option<u64>,
+    ) -> windows::core::Result<Self> {
+        Self::open_source(notify, path, window, audio_token, None)
+    }
+    fn open_source(
+        notify: &IMFMediaEngineNotify,
+        path: &Path,
+        window: isize,
+        audio_token: Option<u64>,
+        reader: Option<std::sync::Arc<crate::streaming::Reader>>,
     ) -> windows::core::Result<Self> {
         // SAFETY: COM calls on this thread, which initialized COM (MTA) and Media Foundation.
         // `window` is a live owned child until Close is acknowledged, or zero for audio-only mode.
@@ -99,7 +129,15 @@ impl Engine {
                 0
             };
             let engine = factory.CreateInstance(flags, &attributes)?;
-            engine.SetSource(&BSTR::from(path.as_os_str().to_string_lossy().as_ref()))?;
+            let stream_token = reader.as_ref().map(|r| r.token);
+            let stream = reader.map(crate::byte_stream::Source::new).transpose()?;
+            if let Some(source) = &stream {
+                engine
+                    .cast::<IMFMediaEngineEx>()?
+                    .SetSourceFromByteStream(&source.stream, &BSTR::from("video.mp4"))?;
+            } else {
+                engine.SetSource(&BSTR::from(path.as_os_str().to_string_lossy().as_ref()))?;
+            }
             engine.Play()?;
             let extended = if window != 0 {
                 engine.cast::<IMFMediaEngineEx>().ok()
@@ -107,6 +145,12 @@ impl Engine {
                 None
             };
             Ok(Self {
+                stream,
+                stream_token,
+                pending_seek: std::cell::Cell::new(None),
+                buffering: std::cell::Cell::new(stream_token.is_some()),
+                seek_wait: std::cell::Cell::new(false),
+                play_intent: std::cell::Cell::new(true),
                 engine,
                 extended,
                 audio_token,
@@ -159,6 +203,18 @@ impl Engine {
     }
 
     fn state(&self, event: u32) -> tg_core::VideoState {
+        match event {
+            17 if self.stream.is_some() && self.seek_wait.replace(false) => {
+                self.buffering.set(false);
+                if self.play_intent.get() {
+                    // SAFETY: resume on the owning MTA only after the paused seek is ready.
+                    let _ = unsafe { self.engine.Play() };
+                }
+            }
+            12 | 1005 => self.buffering.set(true),
+            5 | 11 | 13 | 14 | 19 | 1006 | 1009 => self.buffering.set(false),
+            _ => {}
+        }
         // SAFETY: read-only property calls on the engine owned by this thread.
         let (position, duration, paused, ended) = unsafe {
             (
@@ -176,17 +232,41 @@ impl Engine {
             }
         };
         tg_core::VideoState {
+            stream: None,
+            stream_token: self.stream_token,
+            buffering: self.buffering.get() || self.seek_wait.get(),
+            first_frame: event == 1009,
             audio_token: self.audio_token,
             position_ms: ms(position),
             duration_ms: ms(duration),
-            playing: !paused && !ended,
+            playing: !ended
+                && if self.stream.is_some() {
+                    self.play_intent.get()
+                } else {
+                    !paused
+                },
             ended,
-            failed: event == ERROR_EVENT,
+            failed: event == ERROR_EVENT && self.stream.as_ref().is_none_or(|s| !s.is_closed()),
             dismissed: false,
         }
     }
 
     fn toggle(&self) {
+        if self.stream.is_some() {
+            // Preserve the user's pause choice while the engine is paused for a seek.
+            // SAFETY: read-only state on this engine's MTA thread.
+            let play = unsafe { self.engine.IsEnded().as_bool() } || !self.play_intent.get();
+            self.play_intent.set(play);
+            // SAFETY: playback control on the engine owned by this thread.
+            unsafe {
+                let _ = if play && !self.seek_wait.get() {
+                    self.engine.Play()
+                } else {
+                    self.engine.Pause()
+                };
+            }
+            return;
+        }
         // SAFETY: playback control on the engine owned by this thread.
         unsafe {
             let _ = if self.engine.IsPaused().as_bool() || self.engine.IsEnded().as_bool() {
@@ -202,9 +282,15 @@ impl Engine {
         unsafe {
             let duration = self.engine.GetDuration();
             if duration.is_finite() && duration > 0.0 {
+                if self.stream.is_some() {
+                    self.seek_wait.set(true);
+                    let _ = self.engine.Pause();
+                }
                 let _ = self
                     .engine
                     .SetCurrentTime(fraction.clamp(0.0, 1.0) * duration);
+            } else {
+                self.pending_seek.set(Some(fraction));
             }
         }
     }
@@ -212,6 +298,11 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        // SAFETY: owned stream; closing wakes pending reads before engine shutdown.
+        if let Some(stream) = &self.stream {
+            let _ = unsafe { stream.stream.Close() };
+        }
+
         // SAFETY: stops rendering into the child window before the UI thread destroys it.
         let _ = unsafe { self.engine.Shutdown() };
     }
@@ -219,7 +310,9 @@ impl Drop for Engine {
 
 // MF_MEDIA_ENGINE_EVENT values used to build states.
 const ERROR_EVENT: u32 = 5;
-const STATE_EVENTS: [u32; 8] = [5, 9, 10, 13, 14, 18, 19, 21];
+const STATE_EVENTS: [u32; 15] = [
+    5, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 21, 1005, 1006, 1009,
+];
 
 /// Player thread body. Blocks on its queue; wakes only for requests and engine events.
 pub(crate) fn run(
@@ -239,11 +332,44 @@ pub(crate) fn run(
         return;
     }
     let _ = ready.send(Ok(()));
-    let notify: IMFMediaEngineNotify = Notify { sender }.into();
+    let mut generation = 0u64;
     let mut engine: Option<Engine> = None;
     let mut size = (1, 1);
     while let Ok(message) = receiver.recv() {
         match message {
+            Message::OpenStream {
+                reader,
+                window,
+                width,
+                height,
+            } => {
+                generation = generation.wrapping_add(1);
+                engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
+                size = (width, height);
+                let token = reader.token;
+                match Engine::open_source(
+                    &notify,
+                    Path::new("video.mp4"),
+                    window,
+                    None,
+                    Some(reader),
+                ) {
+                    Ok(opened) => {
+                        opened.resize(width, height);
+                        engine = Some(opened);
+                    }
+                    Err(_) => report(tg_core::VideoState {
+                        stream_token: Some(token),
+                        failed: true,
+                        ..Default::default()
+                    }),
+                }
+            }
             Message::Open {
                 path,
                 window,
@@ -251,7 +377,13 @@ pub(crate) fn run(
                 height,
                 token,
             } => {
+                generation = generation.wrapping_add(1);
                 engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
                 size = (width, height);
                 match Engine::open(&notify, &path, window, token) {
                     Ok(opened) => {
@@ -266,7 +398,13 @@ pub(crate) fn run(
                 }
             }
             Message::OpenAudio { path, token } => {
+                generation = generation.wrapping_add(1);
                 engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
                 match Engine::open(&notify, &path, 0, Some(token)) {
                     Ok(opened) => engine = Some(opened),
                     Err(_) => report(tg_core::VideoState {
@@ -285,6 +423,7 @@ pub(crate) fn run(
             Message::TogglePause => {
                 if let Some(engine) = &engine {
                     engine.toggle();
+                    report(engine.state(0));
                 }
             }
             Message::Seek(fraction) => {
@@ -293,16 +432,24 @@ pub(crate) fn run(
                 }
             }
             Message::Close(done) => {
+                generation = generation.wrapping_add(1);
                 engine = None;
                 let _ = done.send(());
             }
-            Message::Event(event) => {
+            Message::Event {
+                event,
+                generation: origin,
+            } => {
                 if let Some(engine) = &engine
+                    && origin == generation
                     && STATE_EVENTS.contains(&event)
                 {
                     if event == 10 {
                         // Loaded metadata: the video size is known, fit it into the window.
                         engine.resize(size.0, size.1);
+                        if let Some(fraction) = engine.pending_seek.take() {
+                            engine.seek(fraction);
+                        }
                     }
                     report(engine.state(event));
                 }
@@ -311,7 +458,7 @@ pub(crate) fn run(
         }
     }
     drop(engine);
-    drop(notify);
+
     // SAFETY: balances MFStartup and CoInitializeEx above on this thread.
     unsafe {
         let _ = MFShutdown();

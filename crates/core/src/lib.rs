@@ -28,3 +28,6 @@ mod attention;
 pub use attention::{Notification, ReadBatches};
 mod video;
 pub use video::{Video, VideoRect, VideoRequest, VideoState};
+
+mod streaming;
+pub use streaming::{STREAM_PART, STREAM_PRELOAD, StreamFile, StreamRanges, StreamStatus};

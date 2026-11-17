@@ -751,6 +751,15 @@ export component AppWindow inherits Window {
 
 // Media viewer: a separate window, as in Telegram Desktop. The video is drawn by a native child
 // window over the area above the control bar; the Rust side places it from this window's size.
+component BufferSpinner inherits Rectangle {
+    width: 16px; height: 16px;
+    property <angle> spin: 0deg;
+    init => { self.spin = 360deg; }
+    animate spin { duration: 800ms; iteration-count: -1; }
+    Path { width: parent.width; height: parent.height; transform-rotation: parent.spin;
+        viewbox-width: 16; viewbox-height: 16; fill: transparent; stroke: Theme.on-strong; stroke-width: 2px;
+        commands: "M8 1 A7 7 0 1 1 1 8"; }
+}
 export component MediaViewer inherits Window {
     title: "Ferrogram - Media viewer";
     icon: @image-url("icon.png");
@@ -766,6 +775,8 @@ export component MediaViewer inherits Window {
     in property <bool> playing;
     in property <bool> failed;
     in property <float> progress;
+    in property <float> download-start;
+    in property <float> download-end;
     in property <string> time;
     out property <length> bar: 64px;
     callback toggle();
@@ -797,9 +808,11 @@ export component MediaViewer inherits Window {
                 if !root.playing: Path { x: 14px; y: 11px; width: 15px; height: 18px; viewbox-width: 15; viewbox-height: 18; fill: Theme.on-strong; commands: "M0 0 L15 9 L0 18 Z"; }
                 toggle-touch := TouchArea { clicked => { root.toggle(); } }
             }
+            if root.loading: BufferSpinner { x: 53px; y: 24px; }
             seek := Rectangle {
                 x: 70px; y: 16px; width: parent.width - 70px - 170px; height: 32px;
                 Rectangle { y: 14px; height: 4px; border-radius: self.height / 2; background: Theme.track; }
+                Rectangle { x: parent.width * clamp(root.download-start,0,1); y: 14px; height: 4px; width: parent.width * clamp(root.download-end - root.download-start,0,1); background: Theme.on-strong-3; }
                 Rectangle { x: 0px; y: 14px; height: 4px; border-radius: self.height / 2; background: Theme.accent; width: parent.width * clamp(root.progress, 0, 1); }
                 Rectangle {
                     x: parent.width * clamp(root.progress, 0, 1) - 6px; y: 10px; width: 12px; height: 12px; border-radius: self.height / 2;
