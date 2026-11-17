@@ -16,7 +16,9 @@ pub(crate) struct Reader {
     disk: Mutex<Option<(std::path::PathBuf, File)>>,
     wake: Condvar,
     report: Report,
-    waiting: std::sync::atomic::AtomicBool,
+    // The last waiting state sent to the UI. Held while deciding and sending, so reports cannot
+    // reorder. Lock order: `reported`, then `state`; never take `reported` while holding `state`.
+    reported: Mutex<bool>,
     pub file: i32,
     pub token: u64,
     pub length: u64,
@@ -46,7 +48,7 @@ impl Reader {
             }),
             wake: Condvar::new(),
             report,
-            waiting: std::sync::atomic::AtomicBool::new(false),
+            reported: Mutex::new(false),
         });
         reader.update(file);
         reader
@@ -106,6 +108,9 @@ impl Reader {
         self.state.lock().map(|s| s.position).map_err(|_| ())
     }
     pub fn seek(&self, offset: i64, current: bool) -> Result<u64, ()> {
+        // Clear the waiting state in the same section that starts the new generation: a read of
+        // the new generation can only report after this, so its request is never suppressed.
+        let mut reported = self.reported.lock().map_err(|_| ())?;
         let mut s = self.state.lock().map_err(|_| ())?;
         if s.closed {
             return Err(());
@@ -121,22 +126,36 @@ impl Reader {
         s.generation = s.generation.wrapping_add(1);
         self.wake.notify_all();
         drop(s);
-        self.report_wait(None, false);
+        if std::mem::replace(&mut *reported, false) {
+            self.send(None, false);
+        }
         Ok(position)
     }
-    fn report_wait(&self, needed: Option<u64>, waiting: bool) {
+    /// Publishes a read's waiting state. A read cancelled by a seek must not publish: its
+    /// stale state would hide the request of the read that replaced it.
+    fn report_wait(&self, generation: u64, needed: Option<u64>, waiting: bool) {
+        let Ok(mut reported) = self.reported.lock() else {
+            return;
+        };
         if self
-            .waiting
-            .swap(waiting, std::sync::atomic::Ordering::AcqRel)
-            != waiting
+            .state
+            .lock()
+            .map_or(true, |s| s.generation != generation)
         {
-            (self.report)(StreamStatus {
-                file: self.file,
-                token: self.token,
-                needed,
-                waiting,
-            });
+            return;
         }
+        if *reported != waiting {
+            *reported = waiting;
+            self.send(needed, waiting);
+        }
+    }
+    fn send(&self, needed: Option<u64>, waiting: bool) {
+        (self.report)(StreamStatus {
+            file: self.file,
+            token: self.token,
+            needed,
+            waiting,
+        });
     }
     pub fn epoch(&self) -> Result<u64, ()> {
         self.state.lock().map(|s| s.generation).map_err(|_| ())
@@ -205,7 +224,7 @@ impl Reader {
                     if !waiting {
                         waiting = true;
                         drop(s);
-                        self.report_wait(Some(offset), true);
+                        self.report_wait(generation, Some(offset), true);
                         s = self.state.lock().map_err(|_| ())?;
                     }
                     s = self
@@ -221,13 +240,13 @@ impl Reader {
                 }
                 s.position = offset + count as u64;
                 drop(s);
-                self.report_wait(None, false);
+                self.report_wait(generation, None, false);
                 return Ok(count);
             }
             if !waiting {
                 waiting = true;
                 drop(s);
-                self.report_wait(Some(end.unwrap_or(offset)), true);
+                self.report_wait(generation, Some(end.unwrap_or(offset)), true);
                 s = self.state.lock().map_err(|_| ())?;
                 continue;
             }
@@ -502,6 +521,44 @@ mod late_path_tests {
         r.close();
         drop(r);
         std::fs::remove_file(new).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod stale_wait_tests {
+    use super::*;
+    use std::sync::mpsc;
+    #[test]
+    fn a_read_cancelled_by_a_seek_cannot_suppress_the_next_reads_request() {
+        let (tx, rx) = mpsc::channel();
+        let r = Reader::new(
+            StreamFile {
+                id: 1,
+                size: 1024,
+                path: None,
+                offset: 0,
+                prefix: 0,
+                completed: false,
+            },
+            1,
+            Arc::new(move |s| {
+                let _ = tx.send(s);
+            }),
+        );
+        // A read of the old generation reaches its report only after a backward seek.
+        let old = r.epoch().unwrap();
+        r.seek(100, false).unwrap();
+        r.report_wait(old, Some(900), true);
+        assert!(rx.try_recv().is_err(), "a cancelled read must not publish");
+        // The read that replaced it must still request its own range.
+        r.report_wait(old.wrapping_add(1), Some(100), true);
+        let status = rx.try_recv().unwrap();
+        assert!(status.waiting);
+        assert_eq!(status.needed, Some(100));
+        // A seek clears the published waiting state before the next generation can report.
+        r.seek(0, false).unwrap();
+        assert!(!rx.try_recv().unwrap().waiting);
+        r.close();
     }
 }
 
