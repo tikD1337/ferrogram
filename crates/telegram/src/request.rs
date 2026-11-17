@@ -8,12 +8,20 @@ use crate::mapping::{MAX_LINK_BYTES, MAX_TEXT_BYTES, PAGE_SIZE, error};
 
 pub(crate) fn encode(command: Command) -> Result<Value, CommandError> {
     let (mut request, tag) = match command {
-        Command::DownloadRange { file, offset } => {
-            if file <= 0 || offset >= (1u64 << 53) {
+        Command::DownloadRange {
+            file,
+            offset,
+            limit,
+        } => {
+            if file <= 0
+                || offset
+                    .checked_add(limit)
+                    .is_none_or(|end| end >= (1u64 << 53))
+            {
                 return Err(error(-2, "Invalid streaming range."));
             }
             return Ok(
-                json!({"@type":"downloadFile","file_id":file,"priority":32,"offset":offset,"limit":0,"synchronous":false,"@extra":{"command":"download","file":file}}),
+                json!({"@type":"downloadFile","file_id":file,"priority":32,"offset":offset,"limit":limit,"synchronous":false,"@extra":{"command":"download","file":file}}),
             );
         }
         Command::OpenMessageContent { chat, message } => {
@@ -451,17 +459,42 @@ mod streaming_tests {
         let v = encode(Command::DownloadRange {
             file: 42,
             offset: 3 * 1024 * 1024,
+            limit: 1024 * 1024,
         })
         .unwrap();
         assert_eq!(v["offset"], 3 * 1024 * 1024);
         assert_eq!(v["priority"], 32);
-        assert_eq!(v["limit"], 0);
+        assert_eq!(v["limit"], 1024 * 1024);
         assert_eq!(v["synchronous"], false);
-        assert!(encode(Command::DownloadRange { file: 0, offset: 0 }).is_err());
+        assert!(
+            encode(Command::DownloadRange {
+                file: 0,
+                offset: 0,
+                limit: 1
+            })
+            .is_err()
+        );
         assert!(
             encode(Command::DownloadRange {
                 file: 1,
-                offset: 1 << 53
+                offset: 1 << 53,
+                limit: 0
+            })
+            .is_err()
+        );
+        assert!(
+            encode(Command::DownloadRange {
+                file: 1,
+                offset: (1 << 53) - 1,
+                limit: 1
+            })
+            .is_err()
+        );
+        assert!(
+            encode(Command::DownloadRange {
+                file: 1,
+                offset: u64::MAX,
+                limit: 2
             })
             .is_err()
         );

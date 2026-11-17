@@ -24,6 +24,16 @@ pub(crate) struct Demo {
     pending: Arc<AtomicUsize>,
     video_workers: Arc<AtomicUsize>,
     downloads: Arc<std::sync::Mutex<std::collections::BTreeMap<i32, Arc<AtomicBool>>>>,
+    windows: Arc<std::sync::Mutex<std::collections::BTreeMap<i32, DemoWindow>>>,
+}
+/// A streaming download as TDLib runs it: from `offset` up to `end`, extended in place when the
+/// same offset is requested again with a larger limit.
+struct DemoWindow {
+    offset: u64,
+    cursor: u64,
+    end: u64,
+    running: bool,
+    cancelled: Arc<AtomicBool>,
 }
 impl Demo {
     pub fn new(media_path: std::path::PathBuf, text_only: bool) -> Self {
@@ -36,6 +46,7 @@ impl Demo {
             chats: Arc::default(),
             pending: Arc::default(),
             downloads: Arc::default(),
+            windows: Arc::default(),
             video_workers: Arc::default(),
         }
     }
@@ -219,9 +230,13 @@ impl Demo {
                     sink.post(Event::NewMessage(m));
                 }
             }
-            Command::DownloadRange { file, offset } => self.download_video(file, offset)?,
+            Command::DownloadRange {
+                file,
+                offset,
+                limit,
+            } => self.download_video(file, offset, limit)?,
             Command::DownloadFile(id) if (VIDEO_FILE_ID..2_000_000).contains(&id) => {
-                self.download_video(id, 0)?
+                self.download_video(id, 0, 0)?
             }
             Command::DownloadFile(id) => {
                 let (path, size) = demo_file(&self.media_path, id);
@@ -328,10 +343,35 @@ impl Demo {
         }
         Ok(())
     }
-    fn download_video(&self, id: i32, offset: u64) -> Result<(), tg_core::CommandError> {
+    fn download_video(
+        &self,
+        id: i32,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(), tg_core::CommandError> {
         use std::io::{Seek, SeekFrom, Write};
         let Some(sink) = self.sink.clone() else {
             return Ok(());
+        };
+        let bytes: &'static [u8] = include_bytes!("../assets/demo-video.mp4");
+        let size = bytes.len() as u64;
+        let offset = (offset / tg_core::STREAM_PART * tg_core::STREAM_PART).min(size);
+        let end = if limit == 0 {
+            size
+        } else {
+            offset.saturating_add(limit).min(size)
+        };
+        let mut windows = self.windows.lock().map_err(|_| action_error())?;
+        let resume = match windows.get_mut(&id) {
+            Some(w) if w.offset == offset && !w.cancelled.load(Ordering::Acquire) => {
+                // The same offset again extends the download, as TDLib does.
+                w.end = w.end.max(end);
+                if w.running {
+                    return Ok(());
+                }
+                Some((w.cancelled.clone(), w.cursor))
+            }
+            _ => None,
         };
         if self
             .video_workers
@@ -343,26 +383,42 @@ impl Demo {
             return Err(action_error());
         }
         let slot = VideoSlot(self.video_workers.clone());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        {
-            let mut downloads = self.downloads.lock().map_err(|_| action_error())?;
-            if let Some(old) = downloads.remove(&id) {
-                old.store(true, Ordering::Release);
+        let (cancelled, start) = match resume {
+            Some(resume) => resume,
+            None => {
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let mut downloads = self.downloads.lock().map_err(|_| action_error())?;
+                if let Some(old) = downloads.remove(&id) {
+                    old.store(true, Ordering::Release);
+                }
+                if downloads.len() >= 8 {
+                    return Err(action_error());
+                }
+                downloads.insert(id, cancelled.clone());
+                windows.insert(
+                    id,
+                    DemoWindow {
+                        offset,
+                        cursor: offset,
+                        end,
+                        running: false,
+                        cancelled: cancelled.clone(),
+                    },
+                );
+                (cancelled, offset)
             }
-            if downloads.len() >= 8 {
-                return Err(action_error());
-            }
-            downloads.insert(id, cancelled.clone());
+        };
+        if let Some(w) = windows.get_mut(&id) {
+            w.running = true;
         }
+        drop(windows);
         let path = self.media_path.with_extension("stream.mp4");
         let downloads = self.downloads.clone();
+        let windows = self.windows.clone();
         std::thread::Builder::new()
             .name("tg-demo-video-range".into())
             .spawn(move || {
                 let _slot = slot;
-                let bytes = include_bytes!("../assets/demo-video.mp4");
-                let size = bytes.len() as u64;
-                let offset = (offset / tg_core::STREAM_PART * tg_core::STREAM_PART).min(size);
                 let mut output = match std::fs::OpenOptions::new()
                     .create(true)
                     .write(true)
@@ -375,10 +431,25 @@ impl Demo {
                         return;
                     }
                 };
-                let mut cursor = offset;
-                while cursor < size && !cancelled.load(Ordering::Acquire) {
+                let mut cursor = start;
+                while !cancelled.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_secs(2));
                     if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
+                    // Stop at the window's end under the lock, so an extension cannot be lost.
+                    let stop = match windows.lock() {
+                        Ok(mut windows) => match windows.get_mut(&id) {
+                            Some(w) if Arc::ptr_eq(&w.cancelled, &cancelled) => {
+                                let stop = cursor >= w.end;
+                                w.running = !stop;
+                                stop
+                            }
+                            _ => true,
+                        },
+                        Err(_) => true,
+                    };
+                    if stop {
                         break;
                     }
                     let end = (cursor + tg_core::STREAM_PART).min(size);
@@ -391,6 +462,12 @@ impl Demo {
                         break;
                     }
                     cursor = end;
+                    if let Ok(mut windows) = windows.lock()
+                        && let Some(w) = windows.get_mut(&id)
+                        && Arc::ptr_eq(&w.cancelled, &cancelled)
+                    {
+                        w.cursor = cursor;
+                    }
                     let completed = offset == 0 && cursor == size;
                     sink.post(Event::FileUpdated(tg_core::MediaFile {
                         partial: Some(tg_core::StreamFile {
@@ -407,6 +484,12 @@ impl Demo {
                         downloading: !completed,
                         path: completed.then(|| path.clone()),
                     }));
+                }
+                if let Ok(mut windows) = windows.lock()
+                    && let Some(w) = windows.get_mut(&id)
+                    && Arc::ptr_eq(&w.cancelled, &cancelled)
+                {
+                    w.running = false;
                 }
                 if let Ok(mut downloads) = downloads.lock()
                     && downloads

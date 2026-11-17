@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         move |command| {
-            if let Command::DownloadRange { file, offset } = &command {
+            if let Command::DownloadRange { file, offset, .. } = &command {
                 requested.borrow_mut().push((*file, *offset));
             }
             if range_mode && matches!(command, Command::DownloadRange { .. }) {

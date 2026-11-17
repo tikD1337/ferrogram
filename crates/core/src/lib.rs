@@ -30,4 +30,7 @@ mod video;
 pub use video::{Video, VideoRect, VideoRequest, VideoState};
 
 mod streaming;
-pub use streaming::{STREAM_PART, STREAM_PRELOAD, StreamFile, StreamRanges, StreamStatus};
+pub use streaming::{
+    LoadedRanges, MAX_LOADED_RANGES, STREAM_AHEAD_SECONDS, STREAM_PART, STREAM_PRELOAD, StreamFile,
+    StreamRanges, StreamStatus, StreamWindow,
+};

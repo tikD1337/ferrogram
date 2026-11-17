@@ -364,6 +364,31 @@ no media bytes: Media Foundation reads into its own buffers, and the reader hold
 downloaded-range records. Binary size: 13,679,104 -> 13,756,416 bytes (+0.57 %). Not measured
 on a live account yet.
 
+### Live account: a bounded download window (2026-11-17)
+
+Many phone videos keep their index (`moov`) at the end of the file, so playback can start only
+after the player has read the end. A temporary trace (player reads, TDLib requests, first
+frame; removed again) and TDLib's `file_loader` log showed the cost of the first version: it
+asked TDLib for the whole file (`limit: 0`), TDLib sent every part to the server at once
+(177 parts of 64 KiB for an 11.5 MB file), and the request for the end then waited behind the
+whole file. Now each request is a window of about 1 MiB that slides ahead of playback.
+
+Time from opening the viewer to the first video frame, same account and network, cache cleared
+before each run of the same clip:
+
+| Clip | Index | Whole-file request | 1 MiB sliding window |
+|---|---|---|---|
+| 11.5 MB | at the end | 2.65 s, 3.13 s (end of file after 2.0 s, 2.3 s) | 0.84 s (end of file after 0.17 s) |
+| 12.3 MB | at the end | 2.94 s (end of file after 2.4 s) | 0.61 s (end of file after 0.24 s) |
+
+Other clips, not the same in both runs, so only indicative: with the whole-file request 4.5 MB
+and 3.4 MB clips with the index at the start took 0.42 s and 0.49 s, a 3.0 MB clip with the
+index at the end 1.08 s; with the window, clips of 3.9, 2.0 and 1.7 MB with the index at the end
+took 0.66, 0.82 and 0.65 s, a 0.5 MB clip with the index at the start 0.58 s.
+
+The download now also stops about 32 s of playback ahead (6.4 MB of the 11.5 MB clip while it
+played from the start) and continues as playback moves, instead of fetching the whole file.
+
 ## Three clients playing the same video (2026-11-17)
 
 Ferrogram (release build of the `video-streaming` branch), Telegram Desktop 7.4.4 and AyuGram

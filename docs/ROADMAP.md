@@ -149,11 +149,15 @@ work, so the client eventually covers what Telegram Desktop offers:
 - Video streaming, as in Telegram Desktop's `Media::Streaming`: a video Telegram marks as
   streamable starts while it downloads. Media Foundation reads TDLib's partial file at real
   offsets through a read-only `IMFByteStream`; a read of a missing range waits on a condition
-  variable and asks TDLib to download from that offset (128 KiB parts, 1 MiB preload). Seeking
-  pauses until the target range arrives, the viewer shows a buffering spinner and the
-  downloaded range on the seek bar, and closing the viewer cancels the download. Round videos
-  still download completely first. Tested in demo mode with a throttled download, not yet on a
-  live account.
+  variable and asks TDLib to download from that offset. Each request is a window of about
+  1 MiB (`downloadFile` with a `limit`) that slides ahead until 32 s of playback are loaded,
+  so at most about 1 MiB is ever queued on the server and a seek or a read of the index at the
+  end of the file is served at once (Telegram Desktop keeps four 128 KiB requests in flight
+  for the same reason). Seeking pauses until the target range arrives, the viewer shows a
+  buffering spinner and the loaded range on the seek bar (remembered across windows), and
+  closing the viewer cancels the download. Round videos still download completely first.
+  Checked on a live account: the first frame of a 11.5 MB clip with its index at the end
+  arrives after 0.84 s instead of 3.1 s.
 
 Next: reactions, pinning, message links and selection; a clear recovery screen when the
 database key cannot be unlocked; switching from QR back to phone sign-in.

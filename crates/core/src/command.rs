@@ -38,9 +38,12 @@ pub enum CommandKind {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Command {
+    /// Streaming download of `limit` bytes from `offset`; repeating it with the same offset and
+    /// a larger limit extends the running download instead of restarting it.
     DownloadRange {
         file: i32,
         offset: u64,
+        limit: u64,
     },
     /// A user-requested voice/document download, above viewport photo prefetch priority.
     DownloadFileUrgent(i32),

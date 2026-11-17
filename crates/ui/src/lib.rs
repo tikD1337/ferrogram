@@ -688,7 +688,7 @@ impl State {
                 if state.failed && self.streaming.borrow().as_ref().is_some_and(|s|Some(s.token)==state.stream_token) {
                     self.close_video(window);window.set_error("This video cannot be streamed.".into());return;
                 }
-                if self.viewer.window().is_visible() && self.stream_playback(state) {
+                if self.viewer.window().is_visible() && self.stream_playback(window, state) {
                     let duration = state.duration_ms.max(1);
                     self.viewer.set_playing(state.playing);
                     self.viewer.set_failed(state.failed);
