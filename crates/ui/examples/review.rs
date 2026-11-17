@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     forwarded: None,
                     edited: false,
                     is_text: true,
+                    service: false,
                     permissions: None,
                     video: None,
                     id: tg_core::MessageId(104857600),

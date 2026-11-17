@@ -1,9 +1,12 @@
 //! Event-driven Windows tray balloons. No message text is logged.
 #[allow(unsafe_code)]
+mod console;
+#[allow(unsafe_code)]
 mod ffi;
 mod video;
 #[allow(unsafe_code)]
 mod video_ffi;
+pub use console::{attach_parent_console, show_error};
 use std::sync::mpsc;
 use tg_core::{ChatId, Notification};
 pub use video::Player;

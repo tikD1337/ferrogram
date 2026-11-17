@@ -24,6 +24,8 @@ export struct PhotoCell { image: image, label: string, x: length, y: length, wid
 // One feed row: a date separator (optional) and one bubble holding a message or an album.
 export struct MessageRow {
     key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
+    // A service message: a centred pill with the rendered text, no bubble.
+    service: bool,
     highlighted: bool, forwarded: string, sender-y: length,
     has-quote: bool, quote-y: length, quote-sender: string, quote-preview: string, quote-color: color,
     time-label-width: length,
@@ -360,7 +362,17 @@ export component AppWindow inherits Window {
                                 if msg.unread: Rectangle { y: msg.unread-y; width: parent.width; height: 30px; background: Theme.panel;
                                     Text { text: "Unread messages"; color: Theme.accent; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
                                 }
+                                if msg.service: Rectangle {
+                                    x: (parent.width - self.width) / 2;
+                                    y: msg.bubble-y; width: msg.bubble-width; height: msg.bubble-height;
+                                    border-radius: min(12px, self.height / 2); background: Theme.date;
+                                    Image {
+                                        x: (parent.width - self.width) / 2; y: msg.text-y;
+                                        width: msg.text-width; height: msg.text-height; source: msg.rendered;
+                                    }
+                                }
                                 Rectangle {
+                                    visible: !msg.service;
                                     x: msg.outgoing ? parent.width - msg.bubble-width - 14px : 14px;
                                     y: msg.bubble-y; width: msg.bubble-width; height: msg.bubble-height;
                                     background: msg.highlighted ? #386080 : msg.outgoing ? Theme.outgoing : Theme.incoming;

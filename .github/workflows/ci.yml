@@ -52,8 +52,9 @@ jobs:
         shell: pwsh
         run: |
           # Renders the demo without an account and saves a snapshot; fails if the window cannot start.
-          ./target/release/ferrogram.exe --demo --snapshot demo.png
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A GUI-subsystem executable: PowerShell would not wait for it without -Wait.
+          $demo = Start-Process -FilePath ./target/release/ferrogram.exe -ArgumentList '--demo', '--snapshot', 'demo.png' -NoNewWindow -Wait -PassThru
+          if ($demo.ExitCode -ne 0) { exit $demo.ExitCode }
           if (-not (Test-Path demo.png)) { throw 'The demo did not produce a snapshot.' }
 
       - name: Upload the demo snapshot
