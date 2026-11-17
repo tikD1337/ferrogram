@@ -483,6 +483,10 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
     {
         for message in messages {
             let n = message.id.0 / 1048576;
+            // Service messages never carry media, as in Telegram.
+            if message.service {
+                continue;
+            }
             if chat.0 == 5 {
                 demo_attachment(message, 9);
                 continue;

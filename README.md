@@ -82,6 +82,10 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - [x] Sending text messages
 - [x] Reply, edit, delete and forward from a context menu ¹
 - [x] Video playback with GPU decoding (Windows Media Foundation) ¹
+- [x] Voice messages with a waveform, and round video messages played inside their circle ¹
+- [x] Files: download with progress, open with a SmartScreen mark, confirmation for programs ¹
+- [x] Static stickers and single emoji drawn large ¹
+- [x] Service messages ("Anna joined the group") as centred pills ¹
 - [x] Desktop notifications that open the chat ¹
 - [x] Night and OLED themes
 
@@ -89,8 +93,8 @@ Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 **Not yet** — see the [roadmap](docs/ROADMAP.md)
 
-- [ ] Video streaming while downloading, GIFs and round videos
-- [ ] Voice messages, stickers, files, reactions
+- [ ] Video streaming while downloading, GIFs, animated stickers
+- [ ] Reactions, pinning, message links, selecting several messages
 - [ ] Search, folders, settings
 - [ ] Calls, channels with comments, bots, polls
 

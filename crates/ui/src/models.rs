@@ -155,8 +155,8 @@ const DATE: f32 = 40.0;
 const GAP: f32 = 8.0;
 const GAP_RUN: f32 = 2.0;
 const TIME_HEIGHT: f32 = 14.0;
-/// Service pills: 13 px text against 15 px in bubbles, as in Telegram, and their padding.
-const SERVICE_TEXT: f32 = 13.0 / 15.0;
+/// Service pills: 13 px text (bubbles use 14 px), as in Telegram, and their padding.
+const SERVICE_TEXT: f32 = 13.0;
 const SERVICE_PAD_X: f32 = 10.0;
 const SERVICE_PAD_Y: f32 = 4.0;
 /// Telegram allows at most 10 items in one album.
@@ -760,13 +760,11 @@ impl Feed {
         scale: f32,
         max_width: f32,
     ) -> MessageRow {
-        // Rendered at a smaller scale and shown 1:1 in device pixels: crisp 13 px text.
-        let small = scale * SERVICE_TEXT;
         let available = (max_width - 2.0 * SERVICE_PAD_X).max(1.0);
-        let text = self
-            .engine
-            .borrow_mut()
-            .render(message, small, available * small);
+        let text =
+            self.engine
+                .borrow_mut()
+                .render_sized(message, scale, available * scale, SERVICE_TEXT);
         let (text_width, text_height) = (text.width as f32 / scale, text.height as f32 / scale);
         let bubble_y =
             if context.date { DATE } else { 0.0 } + if context.unread { 32.0 } else { 0.0 } + GAP;

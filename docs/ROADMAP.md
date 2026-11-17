@@ -116,3 +116,29 @@ work, so the client eventually covers what Telegram Desktop offers:
 - Video playback through the Media Foundation Media Engine (GPU decoding, audio, a native child
   window), opened from a preview with a play button and the duration. Next for video: play while
   downloading, GIFs and round video messages, inline autoplay of short muted clips.
+
+## Progress (2026-11-17): media messages
+
+- Voice messages: waveform, seeking and playback through the Media Engine in audio-only mode
+  (the system Opus decoder handles OGG/Opus voice notes; no extra library). One voice or round
+  message plays at a time, and playback marks it listened.
+- Round video messages play inside their circle in the feed: the video child window gets an
+  elliptic region clipped to the feed and follows the row while scrolling.
+- Files: download with progress and cancel, then open with the default application. Opened files
+  get the internet-zone mark (SmartScreen, Protected View), and programs and scripts need a
+  confirmation first. Downloaded files can be shown in their folder.
+- Static WebP stickers and single animated emoji are drawn without a bubble. Animated (TGS/WebM)
+  stickers show a still frame or the emoji until animation lands.
+- Service messages (joins, added and removed members, pins, title and photo changes, timers,
+  topics, video chats, gifts) read as in Telegram Desktop and are drawn as centred pills, also
+  in the chat list preview.
+- Release builds no longer open a console window; startup errors show a message box.
+- Sign-in asks for the phone number first and requests a QR code only on demand. TDLib rejects
+  a phone number once a QR code was requested, so switching back from the QR screen needs a
+  logOut and an engine restart; that is the next sign-in task.
+- The interface tokens (colours, type sizes, radii) live in the `Theme` global and are recorded
+  in `.interface-design/system.md`.
+
+Next: reactions, pinning, message links and selection; a clear recovery screen when the
+database key cannot be unlocked; switching from QR back to phone sign-in.
+
