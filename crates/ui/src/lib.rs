@@ -101,7 +101,9 @@ impl State {
         );
         let inline = matches!(
             &request,
-            VideoRequest::OpenRound { .. } | VideoRequest::RoundViewport(_) | VideoRequest::Move(_)
+            VideoRequest::OpenRound { .. }
+                | VideoRequest::RoundSurface { .. }
+                | VideoRequest::Move(_)
         );
         if let Err(error) = (self.video.borrow())(request) {
             if streaming_request {
@@ -509,6 +511,7 @@ impl State {
             self.check.record(state);
         }
         match event {
+            Event::RoundFrame(frame) => self.round_frame(window, frame),
             event @ (Event::MessageProperties { .. }
             | Event::MessageContentChanged { .. }
             | Event::MessageEdited { .. }
@@ -1179,6 +1182,18 @@ impl Ui {
                 if *focused && let Some(w) = weak.upgrade() {
                     s.view_visible(&w);
                 }
+            }
+            if let winit::event::WindowEvent::Occluded(occluded) = event
+                && let Some(w) = weak.upgrade()
+            {
+                s.round_occluded(&w, *occluded);
+            }
+            // Windows does not emit Occluded; WM_SIZE is delivered as Resized(0, 0)
+            // when minimized. Restore arrives as a positive size.
+            if let winit::event::WindowEvent::Resized(size) = event
+                && let Some(w) = weak.upgrade()
+            {
+                s.round_occluded(&w, size.width == 0 || size.height == 0);
             }
             slint::winit_030::EventResult::Propagate
         });

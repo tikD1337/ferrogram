@@ -184,6 +184,7 @@ pub enum Event {
     LocalDataLocked,
     /// Playback state of the open video, sent on player events.
     VideoState(crate::VideoState),
+    RoundFrame(crate::RoundFrame),
     FileUpdated(MediaFile),
     MessageContentOpened {
         chat: ChatId,

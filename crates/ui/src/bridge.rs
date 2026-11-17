@@ -27,6 +27,21 @@ impl Queue {
         if self.failed || self.closed {
             return false;
         }
+        if matches!(event, Event::RoundFrame(_))
+            && self
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::RoundFrame(_)))
+        {
+            if let Some(e) = self
+                .events
+                .iter_mut()
+                .find(|e| matches!(e, Event::RoundFrame(_)))
+            {
+                *e = event;
+            }
+            return false;
+        }
         let bytes = event_bytes(&event);
         if self.full(bytes) {
             self.failed = true;
@@ -242,6 +257,22 @@ mod tests {
         assert!(!queue.enqueue(Event::ChatsLoaded { has_more: true }));
         assert!(queue.failed && queue.events.is_empty());
         assert!(!queue.enqueue(Event::ChatsLoaded { has_more: false }));
+    }
+    #[test]
+    fn round_frames_replace_one_pending_handle_even_across_playback_tokens() {
+        let mut queue = Queue::default();
+        for token in 0..4096 {
+            queue.enqueue(Event::RoundFrame(tg_core::RoundFrame {
+                token,
+                pixels: Arc::new(Mutex::new(Default::default())),
+            }));
+        }
+        assert!(!queue.failed);
+        assert_eq!(queue.events.len(), 1);
+        assert_eq!(queue.bytes, 256);
+        assert!(
+            matches!(queue.events.front(), Some(Event::RoundFrame(frame)) if frame.token == 4095)
+        );
     }
     #[test]
     fn startup_hold_does_not_schedule_early_authentication() {

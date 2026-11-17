@@ -27,7 +27,7 @@ pub use secret::Secret;
 mod attention;
 pub use attention::{Notification, ReadBatches};
 mod video;
-pub use video::{Video, VideoRect, VideoRequest, VideoState};
+pub use video::{RoundFrame, RoundPixels, Video, VideoRect, VideoRequest, VideoState};
 
 mod streaming;
 pub use streaming::{

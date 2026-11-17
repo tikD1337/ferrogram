@@ -1,6 +1,4 @@
-//! Media Foundation Media Engine in rendering mode: the engine decodes (on the GPU when the
-//! driver offers it), plays the audio and presents the frames into a child window of the main
-//! window. No video frame is copied back to the CPU or into the UI toolkit.
+//! Media Foundation playback on one MTA: native viewer, audio-only voices, frame-server rounds.
 use std::{path::Path, sync::mpsc};
 
 use windows::Win32::Foundation::RECT;
@@ -46,6 +44,12 @@ pub(crate) enum Message {
         height: i32,
         token: Option<u64>,
     },
+    OpenRound {
+        path: std::path::PathBuf,
+        size: u32,
+        token: u64,
+    },
+    RoundSurface(std::sync::Arc<crate::round_frames::Surface>),
     OpenAudio {
         path: std::path::PathBuf,
         token: u64,
@@ -84,6 +88,7 @@ impl IMFMediaEngineNotify_Impl for Notify_Impl {
 }
 
 struct Engine {
+    frames: Option<crate::round_frames::Frames>,
     audio_token: Option<u64>,
     stream: Option<crate::byte_stream::Source>,
     stream_token: Option<u64>,
@@ -102,7 +107,7 @@ impl Engine {
         window: isize,
         audio_token: Option<u64>,
     ) -> windows::core::Result<Self> {
-        Self::open_source(notify, path, window, audio_token, None)
+        Self::open_source(notify, path, window, audio_token, None, None)
     }
     fn open_source(
         notify: &IMFMediaEngineNotify,
@@ -110,6 +115,7 @@ impl Engine {
         window: isize,
         audio_token: Option<u64>,
         reader: Option<std::sync::Arc<crate::streaming::Reader>>,
+        frames: Option<crate::round_frames::Frames>,
     ) -> windows::core::Result<Self> {
         // SAFETY: COM calls on this thread, which initialized COM (MTA) and Media Foundation.
         // `window` is a live owned child until Close is acknowledged, or zero for audio-only mode.
@@ -123,7 +129,10 @@ impl Engine {
             if window != 0 {
                 attributes.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, window as u64)?;
             }
-            let flags = if window == 0 {
+            if let Some(frames) = &frames {
+                frames.attributes(&attributes)?;
+            }
+            let flags = if window == 0 && frames.is_none() {
                 windows::Win32::Media::MediaFoundation::MF_MEDIA_ENGINE_AUDIOONLY.0 as u32
             } else {
                 0
@@ -145,6 +154,7 @@ impl Engine {
                 None
             };
             Ok(Self {
+                frames,
                 stream,
                 stream_token,
                 pending_seek: std::cell::Cell::new(None),
@@ -320,6 +330,7 @@ pub(crate) fn run(
     sender: mpsc::SyncSender<Message>,
     report: Box<dyn Fn(tg_core::VideoState) + Send>,
     ready: mpsc::SyncSender<Result<(), Error>>,
+    frames_report: Box<dyn Fn(tg_core::RoundFrame) + Send>,
 ) {
     // SAFETY: per-thread COM and Media Foundation initialization, undone at the end of run.
     let started = unsafe {
@@ -335,7 +346,52 @@ pub(crate) fn run(
     let mut generation = 0u64;
     let mut engine: Option<Engine> = None;
     let mut size = (1, 1);
-    while let Ok(message) = receiver.recv() {
+    let mut next_frame = std::time::Instant::now();
+    loop {
+        let pacing = engine.as_ref().and_then(|e| {
+            e.frames
+                .as_ref()
+                .filter(|f| f.visible && f.ready.get() && e.state(0).playing)
+                .map(|f| f.interval.get())
+        });
+        let received = if let Some(interval) = pacing {
+            receiver.recv_timeout(
+                next_frame
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(interval),
+            )
+        } else {
+            receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        let message = match received {
+            Ok(message) => message,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(interval) = pacing {
+                    next_frame = crate::round_frames::next_deadline(
+                        next_frame,
+                        std::time::Instant::now(),
+                        interval,
+                    );
+                }
+                if let Some(e) = &mut engine
+                    && let Some(f) = &mut e.frames
+                {
+                    match f.tick(&e.engine) {
+                        Ok(true) => frames_report(f.frame.clone()),
+                        Ok(false) => {}
+                        Err(_) => report(tg_core::VideoState {
+                            audio_token: e.audio_token,
+                            failed: true,
+                            ..Default::default()
+                        }),
+                    }
+                }
+                continue;
+            }
+            Err(_) => break,
+        };
         match message {
             Message::OpenStream {
                 reader,
@@ -358,6 +414,7 @@ pub(crate) fn run(
                     window,
                     None,
                     Some(reader),
+                    None,
                 ) {
                     Ok(opened) => {
                         opened.resize(width, height);
@@ -395,6 +452,35 @@ pub(crate) fn run(
                         failed: true,
                         ..Default::default()
                     }),
+                }
+            }
+            Message::OpenRound { path, size, token } => {
+                generation = generation.wrapping_add(1);
+                engine = None;
+                let notify: IMFMediaEngineNotify = Notify {
+                    sender: sender.clone(),
+                    generation,
+                }
+                .into();
+                let opened = crate::round_frames::Frames::new(size, token).and_then(|frames| {
+                    Engine::open_source(&notify, &path, 0, Some(token), None, Some(frames))
+                });
+                match opened {
+                    Ok(opened) => engine = Some(opened),
+                    Err(_) => report(tg_core::VideoState {
+                        audio_token: Some(token),
+                        failed: true,
+                        ..Default::default()
+                    }),
+                }
+            }
+            Message::RoundSurface(surface) => {
+                if let Some((size, visible)) = surface.take()
+                    && let Some(e) = &mut engine
+                    && let Some(f) = &mut e.frames
+                {
+                    f.visible = visible;
+                    f.size = size.clamp(1, 2048);
                 }
             }
             Message::OpenAudio { path, token } => {
@@ -447,6 +533,9 @@ pub(crate) fn run(
                     if event == 10 {
                         // Loaded metadata: the video size is known, fit it into the window.
                         engine.resize(size.0, size.1);
+                        if let Some(f) = &engine.frames {
+                            f.set_rate(&engine.engine);
+                        }
                         if let Some(fraction) = engine.pending_seek.take() {
                             engine.seek(fraction);
                         }
@@ -467,11 +556,7 @@ pub(crate) fn run(
 }
 
 /// Child window that receives the video. Created, moved and destroyed on the UI thread.
-pub(crate) struct ChildWindow(
-    HWND,
-    std::cell::Cell<tg_core::VideoRect>,
-    std::cell::Cell<Option<tg_core::VideoRect>>,
-);
+pub(crate) struct ChildWindow(HWND, std::cell::Cell<tg_core::VideoRect>);
 
 /// Whether the player's video window under `parent` is visible with a non-empty window region.
 /// Used by reference checks; hardware video pixels cannot be read back. `None` when there is no
@@ -555,73 +640,15 @@ impl ChildWindow {
             // SAFETY: reads this thread's last error right after the failed call.
             return Err(Error("video window", unsafe { GetLastError() }));
         }
-        Ok(Self(
-            window,
-            std::cell::Cell::new(rect),
-            std::cell::Cell::new(None),
-        ))
+        Ok(Self(window, std::cell::Cell::new(rect)))
     }
 
     pub(crate) fn handle(&self) -> isize {
         self.0 as isize
     }
 
-    pub(crate) fn visible(&self, visible: bool) {
-        // SAFETY: this child is live and owned by the calling UI thread.
-        unsafe {
-            ShowWindow(
-                self.0,
-                if visible {
-                    SW_SHOWNOACTIVATE
-                } else {
-                    windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE
-                },
-            );
-        }
-    }
-    pub(crate) fn round(&self, viewport: tg_core::VideoRect) -> Result<(), Error> {
-        use windows_sys::Win32::Graphics::Gdi::{
-            CombineRgn, CreateEllipticRgn, CreateRectRgn, DeleteObject, RGN_AND, SetWindowRgn,
-        };
-        self.2.set(Some(viewport));
-        let r = self.1.get();
-        // SAFETY: temporary owned GDI regions, bounded physical dimensions from the UI. On
-        // successful SetWindowRgn ownership transfers to Windows; all other regions are freed.
-        unsafe {
-            let ellipse = CreateEllipticRgn(0, 0, r.width.max(1) + 1, r.height.max(1) + 1);
-            let clip = CreateRectRgn(
-                (viewport.x - r.x).max(0),
-                (viewport.y - r.y).max(0),
-                (viewport.x + viewport.width - r.x).min(r.width),
-                (viewport.y + viewport.height - r.y).min(r.height),
-            );
-            if ellipse.is_null() || clip.is_null() {
-                if !ellipse.is_null() {
-                    DeleteObject(ellipse);
-                }
-                if !clip.is_null() {
-                    DeleteObject(clip);
-                }
-                return Err(Error("round video region", GetLastError()));
-            }
-            let combined = CombineRgn(ellipse, ellipse, clip, RGN_AND);
-            DeleteObject(clip);
-            if combined == 0 || SetWindowRgn(self.0, ellipse, 1) == 0 {
-                DeleteObject(ellipse);
-                return Err(Error("round video region", GetLastError()));
-            }
-        }
-        Ok(())
-    }
     pub(crate) fn place(&self, rect: tg_core::VideoRect) -> Result<(), Error> {
         self.1.set(rect);
-        if let Some(viewport) = self.2.get()
-            && let Err(error) = self.round(viewport)
-        {
-            // SAFETY: hide the live owned child if a new clipping region cannot be set.
-            unsafe { ShowWindow(self.0, windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE) };
-            return Err(error);
-        }
         // SAFETY: the window is owned by this struct and still alive.
         unsafe {
             SetWindowPos(
@@ -784,74 +811,5 @@ impl Drop for Backdrop {
     fn drop(&mut self) {
         // SAFETY: destroyed once on the UI thread that created it; WM_NCDESTROY frees the box.
         unsafe { DestroyWindow(self.0) };
-    }
-}
-
-#[cfg(test)]
-mod round_tests {
-    use super::*;
-    #[test]
-    fn round_region_excludes_corners_and_follows_viewport_after_move() {
-        use windows_sys::Win32::Graphics::Gdi::{
-            CreateRectRgn, DeleteObject, GetWindowRgn, PtInRegion,
-        };
-        // SAFETY: a temporary top-level STATIC window on this test thread; no shared HWNDs.
-        let parent = unsafe {
-            CreateWindowExW(
-                0,
-                windows_sys::w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP,
-                0,
-                0,
-                400,
-                400,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                GetModuleHandleW(std::ptr::null()),
-                std::ptr::null(),
-            )
-        };
-        assert!(!parent.is_null());
-        let child = ChildWindow::create(
-            parent as isize,
-            tg_core::VideoRect {
-                x: 20,
-                y: 20,
-                width: 200,
-                height: 200,
-            },
-        )
-        .unwrap();
-        let viewport = tg_core::VideoRect {
-            x: 0,
-            y: 70,
-            width: 400,
-            height: 200,
-        };
-        child.round(viewport).unwrap();
-        // SAFETY: owned temporary output region; live child; querying never takes ownership.
-        unsafe {
-            let region = CreateRectRgn(0, 0, 0, 0);
-            assert_ne!(GetWindowRgn(child.0, region), 0);
-            assert_eq!(PtInRegion(region, 0, 60), 0);
-            assert_eq!(PtInRegion(region, 100, 20), 0);
-            assert_ne!(PtInRegion(region, 100, 100), 0);
-            child
-                .place(tg_core::VideoRect {
-                    x: 20,
-                    y: 80,
-                    width: 200,
-                    height: 200,
-                })
-                .unwrap();
-            assert_ne!(GetWindowRgn(child.0, region), 0);
-            assert_ne!(PtInRegion(region, 100, 20), 0);
-            assert_eq!(PtInRegion(region, 100, 195), 0);
-            DeleteObject(region);
-        }
-        drop(child);
-        // SAFETY: the child is gone; the parent is owned by this test and destroyed once.
-        unsafe { DestroyWindow(parent) };
     }
 }

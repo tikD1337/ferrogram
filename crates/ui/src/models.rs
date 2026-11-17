@@ -220,6 +220,7 @@ pub(crate) struct Feed {
     pub jump_unread: Cell<bool>,
     pub jump_target: Cell<Option<MessageId>>,
     pub highlight: Cell<Option<MessageId>>,
+    pub round_scale: Cell<Option<(ChatId, MessageId, f32)>>,
     pub audio: Cell<Option<(MessageId, tg_core::VideoState)>>,
     // Only viewport rows own raster images, at most 64 rows and 96 MiB in total.
     visible: RefCell<Vec<Cached>>,
@@ -241,6 +242,7 @@ impl Feed {
             jump_target: Cell::new(None),
             highlight: Cell::new(None),
             audio: Cell::new(None),
+            round_scale: Cell::new(None),
             notify: ModelNotify::default(),
         })
     }
@@ -494,7 +496,12 @@ impl Feed {
         };
         let (frames, media_width, media_height) =
             if let Some(tg_core::Attachment::Round(r)) = &first.attachment {
-                let d = f32::from(r.length.clamp(1, 240)).min(max_width);
+                let growth = self
+                    .round_scale
+                    .get()
+                    .filter(|(chat, id, _)| *chat == first.chat && *id == first.id)
+                    .map_or(0.0, |(_, _, growth)| growth);
+                let d = (f32::from(r.length.clamp(1, 240)) * (1.0 + growth / 3.0)).min(max_width);
                 (vec![[0.0, 0.0, d, d]], d, d)
             } else if let Some(tg_core::Attachment::Sticker(s) | tg_core::Attachment::Emoji(s)) =
                 &first.attachment
@@ -1114,6 +1121,52 @@ mod feed_tests {
         assert_eq!(feed.row_count(), 1);
         assert!(feed.visible.borrow()[0].row.unread);
     }
+    #[test]
+    fn round_growth_and_shrink_preserve_reader_anchor_and_width_bound() {
+        let feed = Feed::new(None);
+        let mut items: Vec<_> = (1..=10).map(message).collect();
+        let id = items[2].id;
+        items[2].attachment = Some(tg_core::Attachment::Round(tg_core::Round {
+            file: tg_core::MediaFile {
+                id: 17,
+                path: None,
+                partial: None,
+                size: 100,
+                downloaded: 0,
+                downloading: false,
+            },
+            duration: 12,
+            length: 240,
+            viewed: false,
+        }));
+        feed.history.borrow_mut().open(ChatId(1));
+        feed.history
+            .borrow_mut()
+            .page(ChatId(1), MessageId(0), None, items, false);
+        let (mut top, _) = feed.layout(60.0, 1200.0, false);
+        let anchor = feed.geometry.borrow().anchor(top);
+        for growth in [0.5, 1.0, 0.5, 0.0] {
+            feed.round_scale.set(Some((ChatId(1), id, growth)));
+            feed.invalidate_message(id);
+            (top, _) = feed.layout(top, 1200.0, false);
+            assert_eq!(feed.geometry.borrow().anchor(top), anchor);
+            let row = (0..feed.row_count())
+                .filter_map(|i| feed.row_data(i))
+                .find(|r| r.key == id.0.to_string())
+                .unwrap();
+            assert!((row.media_width - (240.0 * (1.0 + growth / 3.0))).abs() < 0.1);
+        }
+        feed.width.set(260.0);
+        feed.round_scale.set(Some((ChatId(1), id, 1.0)));
+        feed.invalidate();
+        feed.layout(top, 1200.0, false);
+        let row = (0..feed.row_count())
+            .filter_map(|i| feed.row_data(i))
+            .find(|r| r.key == id.0.to_string())
+            .unwrap();
+        assert_eq!(row.media_width, 260.0);
+    }
+
     #[test]
     fn real_text_geometry_preserves_visible_id_and_pixel_offset_when_window_slides() {
         let feed = Feed::new(None);

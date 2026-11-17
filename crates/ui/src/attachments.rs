@@ -451,6 +451,15 @@ pub(super) fn bind(w: &AppWindow, state: &Rc<State>) {
     });
     let weak = w.as_weak();
     let s = state.clone();
+    w.on_round_scale({
+        let weak = w.as_weak();
+        let state = state.clone();
+        move |growth| {
+            if let Some(w) = weak.upgrade() {
+                state.round_scale(&w, growth);
+            }
+        }
+    });
     w.on_round_pointer(move |phase, x, y| {
         if let Some(w) = weak.upgrade() {
             s.round_pointer(&w, phase, x, y);

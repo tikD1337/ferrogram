@@ -280,8 +280,13 @@ fn attach_notifications(ui: &Ui) -> Option<Arc<tg_platform::Notifications>> {
 /// the player reports that playback is unavailable.
 fn attach_video(ui: &Ui) -> Option<Rc<tg_platform::Player>> {
     let events = ui.event_sink();
+    let frames = events.clone();
     let player = Rc::new(
-        tg_platform::Player::start(move |state| events.post(Event::VideoState(state))).ok()?,
+        tg_platform::Player::start_with_frames(
+            move |state| events.post(Event::VideoState(state)),
+            move |frame| frames.post(Event::RoundFrame(frame)),
+        )
+        .ok()?,
     );
     let requests = player.clone();
     ui.on_video(move |request| {

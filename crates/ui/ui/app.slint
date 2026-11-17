@@ -224,6 +224,13 @@ export component AppWindow inherits Window {
     in property <length> round-y;
     in property <length> round-size;
     in property <image> round-preview;
+    in property <image> round-frame;
+    in property <bool> round-expanded;
+    out property <float> round-growth: root.round-expanded ? 1 : 0;
+    animate round-growth { duration: 200ms; easing: ease-in-out; }
+    changed round-growth => { root.round-scale(root.round-growth); }
+    callback round-scale(float);
+    in property <string> round-key;
     in property <string> round-time;
     in property <string> round-arc;
     callback round-pointer(phase: int, x: float, y: float);
@@ -555,8 +562,8 @@ export component AppWindow inherits Window {
                                         for cell[index] in msg.cells: Rectangle {
                                             x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: msg.sticker ? transparent : Theme.field;
                                             Text { text: cell.label; color: Theme.muted; font-size: msg.sticker ? 80px : 13px; horizontal-alignment: center; vertical-alignment: center; }
-                                            Image { source: cell.image; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; width: cell.raster-width > 0px ? cell.raster-width : parent.width; height: cell.raster-height > 0px ? cell.raster-height : parent.height; image-fit: msg.emoji ? contain : cover; }
-                                            if cell.video || msg.round: Rectangle {
+                                            Image { source: msg.round && msg.key == root.round-key && root.round-frame.width > 0 ? root.round-frame : cell.image; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; width: cell.raster-width > 0px ? cell.raster-width : parent.width; height: cell.raster-height > 0px ? cell.raster-height : parent.height; image-fit: msg.emoji ? contain : cover; }
+                                            if cell.video || (msg.round && (!msg.round-active || !msg.voice-playing)): Rectangle {
                                                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                                 width: 48px; height: 48px; border-radius: self.height / 2; background: play-touch.has-hover ? Theme.scrim-hover : Theme.scrim;
                                                 Path { x: 18px; y: 14px; width: 16px; height: 20px; viewbox-width: 16; viewbox-height: 20; fill: Theme.on-strong; commands: msg.round && msg.voice-playing ? "M0 0 H5 V20 H0 Z M11 0 H16 V20 H11 Z" : "M0 0 L16 10 L0 20 Z"; }
@@ -684,7 +691,7 @@ export component AppWindow inherits Window {
             x: 4px; y: 4px; width: root.round-size; height: self.width;
             border-radius: self.width / 2; clip: true;
             background: Theme.field;
-            Image { source: root.round-preview; width: parent.width; height: parent.height; image-fit: cover; }
+            Image { source: root.round-frame.width > 0 ? root.round-frame : root.round-preview; width: parent.width; height: parent.height; image-fit: cover; }
         }
         Path { width: parent.width; height: parent.height; viewbox-width: 100; viewbox-height: 100;
             fill: transparent; stroke: Theme.accent; stroke-width: 2px; commands: root.round-arc; }

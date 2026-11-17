@@ -11,6 +11,8 @@ pub use files::Files;
 mod byte_stream;
 #[allow(unsafe_code)]
 mod files_ffi;
+#[allow(unsafe_code)]
+mod round_frames;
 mod streaming;
 mod video;
 #[allow(unsafe_code)]

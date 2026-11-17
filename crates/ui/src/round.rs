@@ -8,6 +8,7 @@ pub(super) struct Dock {
     preview: Image,
     state: VideoState,
     shown: bool,
+    occluded: bool,
 }
 struct Drag {
     pointer: (i32, i32),
@@ -23,6 +24,7 @@ impl Default for Dock {
             preview: Image::default(),
             state: VideoState::default(),
             shown: true,
+            occluded: false,
         }
     }
 }
@@ -96,16 +98,27 @@ impl State {
         }
     }
     pub(crate) fn clear_round(&self, w: &AppWindow) {
-        let corner = self.attachments.dock.borrow().corner;
+        let (corner, occluded) = {
+            let dock = self.attachments.dock.borrow();
+            (dock.corner, dock.occluded)
+        };
         *self.attachments.dock.borrow_mut() = Dock {
             corner,
+            occluded,
             ..Default::default()
         };
+        w.set_round_expanded(false);
         w.set_round_floating(false);
         w.set_round_preview(Image::default());
+        w.set_round_frame(Image::default());
+        w.set_round_key("".into());
     }
     pub(crate) fn round_state(&self, w: &AppWindow, state: VideoState) {
         self.attachments.dock.borrow_mut().state = state;
+        self.sync_round(w);
+    }
+    pub(crate) fn round_occluded(&self, w: &AppWindow, occluded: bool) {
+        self.attachments.dock.borrow_mut().occluded = occluded;
         self.sync_round(w);
     }
     pub(crate) fn round_removed(&self, w: &AppWindow, chat: ChatId, ids: &[MessageId]) {
@@ -187,22 +200,63 @@ impl State {
             self.stop_voice(w);
             return;
         }
-        if let Some(window) = native_window(w.window()) {
-            if let Some(v) = self.attachments.voice.borrow_mut().as_mut() {
-                v.placed = Some((rect, viewport));
-            }
-            self.video(
-                w,
-                VideoRequest::OpenRound {
-                    path,
-                    window,
-                    rect,
-                    viewport,
-                    token,
-                },
-            );
-            self.sync_round(w);
+        if let Some(v) = self.attachments.voice.borrow_mut().as_mut() {
+            v.placed = Some((rect, viewport));
         }
+        self.video(
+            w,
+            VideoRequest::OpenRound {
+                path,
+                size: rect.width as u32,
+                token,
+            },
+        );
+        self.round_scale(w, w.get_round_growth());
+        w.set_round_expanded(true);
+        self.sync_round(w);
+    }
+    pub(crate) fn round_scale(&self, w: &AppWindow, growth: f32) {
+        let target = self
+            .attachments
+            .voice
+            .borrow()
+            .as_ref()
+            .filter(|v| v.round)
+            .map(|v| (v.chat, v.message))
+            .or_else(|| self.feed.round_scale.get().map(|(chat, id, _)| (chat, id)));
+        if let Some((chat, id)) = target {
+            if let Some((old_chat, old, _)) = self.feed.round_scale.get()
+                && self.chats.selected.get() == Some(old_chat)
+            {
+                self.feed.invalidate_message(old);
+            }
+            self.feed.round_scale.set(Some((chat, id, growth)));
+            self.feed.invalidate_message(id);
+            self.refresh(w);
+        }
+    }
+    pub(crate) fn round_frame(&self, w: &AppWindow, frame: tg_core::RoundFrame) {
+        if !self
+            .attachments
+            .voice
+            .borrow()
+            .as_ref()
+            .is_some_and(|v| v.round && v.token == frame.token)
+        {
+            return;
+        }
+        let Ok(pixels) = frame.pixels.lock() else {
+            return;
+        };
+        if pixels.width == 0 || pixels.height == 0 {
+            return;
+        }
+        let image = Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+            &pixels.rgba,
+            pixels.width,
+            pixels.height,
+        ));
+        w.set_round_frame(image);
     }
     pub(crate) fn sync_round(&self, w: &AppWindow) {
         let active = self
@@ -228,8 +282,12 @@ impl State {
             }
         }
         let (rect, view, floating) = self.round_placement(w, chat, id);
-        let shown =
-            !w.get_menu_open() && w.get_action_dialog() == 0 && view.width > 0 && view.height > 0;
+        let shown = !w.get_menu_open()
+            && w.get_action_dialog() == 0
+            && view.width > 0
+            && view.height > 0
+            && !self.attachments.dock.borrow().occluded
+            && w.window().is_visible();
         let scale = w.window().scale_factor();
         let (preview, state, visibility_changed) = {
             let mut dock = self.attachments.dock.borrow_mut();
@@ -245,6 +303,11 @@ impl State {
         w.set_round_y(rect.y as f32 / scale);
         w.set_round_size(rect.width as f32 / scale);
         w.set_round_preview(preview);
+        w.set_round_key(if self.chats.selected.get() == Some(chat) {
+            id.0.to_string().into()
+        } else {
+            "".into()
+        });
         w.set_round_time(clock::duration(state.position_ms / 1000).into());
         let progress =
             (f64::from(state.position_ms) / f64::from(state.duration_ms.max(1))).clamp(0.0, 0.999);
@@ -258,15 +321,17 @@ impl State {
             )
             .into(),
         );
-        if visibility_changed {
-            self.video(w, VideoRequest::RoundVisible(shown));
-        }
-        if placed.is_some() && placed != Some((rect, view)) {
+        if placed.is_some() && (visibility_changed || placed != Some((rect, view))) {
             if let Some(v) = self.attachments.voice.borrow_mut().as_mut() {
                 v.placed = Some((rect, view));
             }
-            self.video(w, VideoRequest::RoundViewport(view));
-            self.video(w, VideoRequest::Move(rect));
+            self.video(
+                w,
+                VideoRequest::RoundSurface {
+                    size: rect.width.max(1) as u32,
+                    visible: shown,
+                },
+            );
         }
     }
     pub(crate) fn round_pointer(&self, w: &AppWindow, phase: i32, x: f32, y: f32) {
