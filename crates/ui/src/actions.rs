@@ -245,7 +245,7 @@ impl State {
             _ => {}
         }
     }
-    fn open_quote(&self, w: &AppWindow, reply: Reply) {
+    pub(super) fn open_quote(&self, w: &AppWindow, reply: Reply) {
         if reply.chat.0 == 0 || reply.message.0 <= 0 {
             w.set_error("The original message is unavailable.".into());
             return;
@@ -448,6 +448,7 @@ impl State {
                 self.feed.invalidate_message(message);
             }
             Event::MessagesDeleted { chat, messages } => {
+                self.round_removed(w, chat, &messages);
                 // Geometry still contains the old row positions until refresh restores its anchor.
                 self.feed.history.borrow_mut().remove(chat, &messages);
                 for id in &messages {

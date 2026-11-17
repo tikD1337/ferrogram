@@ -71,7 +71,7 @@ export struct MessageRow {
     voice: bool, voice-playing: bool, voice-unlistened: bool, voice-time: string, waveform: [WaveBar],
     document: bool, file-name: string, file-size: string, file-progress: string,
     file-available: bool, file-downloading: bool, attachment-image: image, attachment-y: length,
-    sticker: bool, round: bool, emoji: bool, round-progress: string,
+    sticker: bool, round: bool, round-active: bool, emoji: bool, round-progress: string,
     key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
     // A service message: a centred pill with the rendered text, no bubble.
     service: bool,
@@ -219,6 +219,15 @@ export component AppWindow inherits Window {
     // Opens the video of a feed cell in the separate media viewer window.
     callback open-video(row: int, cell: int);
     callback attachment-action(key: string, action: int, fraction: float);
+    in property <bool> round-floating;
+    in property <length> round-x;
+    in property <length> round-y;
+    in property <length> round-size;
+    in property <image> round-preview;
+    in property <string> round-time;
+    in property <string> round-arc;
+    callback round-pointer(phase: int, x: float, y: float);
+    callback round-return();
     callback confirm-file();
     in property <string> file-name;
 
@@ -409,6 +418,15 @@ export component AppWindow inherits Window {
                         clip: true;
                         property <length> location-x: self.absolute-position.x;
                         property <length> location-y: self.absolute-position.y;
+                        // changed handlers do not publish an unchanged initial value. In
+                        // particular a zero viewport width clips the native round to nothing.
+                        init => {
+                            root.feed-left = self.location-x;
+                            root.feed-top = self.location-y;
+                            root.feed-view-width = self.width;
+                            root.feed-height = self.height;
+                            root.viewport-changed();
+                        }
                         changed location-x => { root.feed-left=self.location-x; root.viewport-changed(); }
                         changed location-y => { root.feed-top=self.location-y; root.viewport-changed(); }
                         changed width => { root.feed-view-width=self.width; root.viewport-changed(); }
@@ -564,8 +582,9 @@ export component AppWindow inherits Window {
                                             height: parent.height; color: Theme.on-strong; font-size: Theme.type-meta; vertical-alignment: center; }
                                         if msg.voice-unlistened: Rectangle { x: parent.width - 12px; y: 8px; width: 5px; height: 5px; border-radius: self.height / 2; background: Theme.on-strong; }
                                     }
-                                    if msg.round && msg.file-downloading: Path {
-                                        x: 0px; y: msg.media-y; width: msg.media-width; height: msg.media-height;
+                                    if msg.round && (msg.file-downloading || msg.round-active): Path {
+                                        x: msg.round-active ? -2px : 0px; y: msg.media-y - (msg.round-active ? 2px : 0px);
+                                        width: msg.media-width + (msg.round-active ? 4px : 0px); height: msg.media-height + (msg.round-active ? 4px : 0px);
                                         viewbox-width: 100; viewbox-height: 100; fill: transparent; stroke: Theme.accent; stroke-width: 1.5px;
                                         commands: msg.round-progress;
                                     }
@@ -650,6 +669,40 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+    if root.round-floating: Rectangle {
+        x: root.round-x - 4px; y: root.round-y - 4px;
+        width: root.round-size + 8px; height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.shadow;
+        Rectangle {
+            x: 4px; y: 4px; width: root.round-size; height: self.width;
+            border-radius: self.width / 2; clip: true;
+            background: Theme.field;
+            Image { source: root.round-preview; width: parent.width; height: parent.height; image-fit: cover; }
+        }
+        Path { width: parent.width; height: parent.height; viewbox-width: 100; viewbox-height: 100;
+            fill: transparent; stroke: Theme.accent; stroke-width: 2px; commands: root.round-arc; }
+        Rectangle {
+            x: (parent.width - self.width)/2; y: parent.height + 2px;
+            width: time.preferred-width + 12px; height: 20px; border-radius: self.height / 2;
+            background: Theme.scrim;
+            time := Text { text: root.round-time; color: Theme.on-strong; font-size: Theme.type-meta;
+                horizontal-alignment: center; vertical-alignment: center; }
+        }
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.round-pointer(0,(self.absolute-position.x+self.mouse-x)/1px,(self.absolute-position.y+self.mouse-y)/1px);
+                } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                    root.round-pointer(2,(self.absolute-position.x+self.mouse-x)/1px,(self.absolute-position.y+self.mouse-y)/1px);
+                } else if event.kind == PointerEventKind.cancel { root.round-pointer(3,0,0); }
+            }
+            moved => { if self.pressed { root.round-pointer(1,(self.absolute-position.x+self.mouse-x)/1px,(self.absolute-position.y+self.mouse-y)/1px); } }
+            double-clicked => { root.round-return(); }
+            scroll-event(event) => { root.wheel(event.delta-y); return accept; }
         }
     }
     if root.action-dialog != 0: Rectangle {

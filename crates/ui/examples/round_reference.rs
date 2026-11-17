@@ -4,6 +4,9 @@ include!("../src/lib.rs");
 #[path = "../../app/src/demo.rs"]
 #[allow(dead_code)]
 mod demo_backend;
+#[path = "support/round_probe.rs"]
+#[allow(unsafe_code)]
+mod round_probe;
 use slint::Model;
 use std::sync::{
     Arc,
@@ -12,8 +15,41 @@ use std::sync::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mode = args.next().unwrap_or("play".into());
+    if !matches!(
+        mode.as_str(),
+        "play"
+            | "preview"
+            | "emoji"
+            | "progress"
+            | "cancel"
+            | "move"
+            | "hold"
+            | "measure"
+            | "floating-measure"
+            | "offscreen"
+            | "return"
+            | "chat"
+            | "chat-return"
+            | "chat-return-pause"
+            | "removed"
+            | "other-round"
+            | "resize"
+            | "menu"
+            | "menu-return"
+            | "pause"
+            | "float-pause"
+            | "drag"
+            | "drag-close"
+            | "shared"
+            | "ended"
+    ) {
+        return Err("Unknown round reference mode".into());
+    }
     let png = args.next().ok_or("Supply a PNG path")?;
     let media = demo_backend::prepare_media()?;
+    if let Some(clip) = args.next() {
+        std::fs::copy(clip, media.with_extension("round.mp4"))?;
+    }
     let demo = Rc::new(RefCell::new(demo_backend::Demo::new(media.clone(), false)));
     let backend = demo.clone();
     let receipts = Rc::new(Cell::new(0));
@@ -36,6 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     demo.borrow_mut().sink = Some(ui.event_sink());
     demo.borrow_mut().seed();
+    let first = Arc::new(AtomicBool::new(false));
+    let first_frame = first.clone();
     let ended = Arc::new(AtomicBool::new(false));
     let failed = Arc::new(AtomicBool::new(false));
     let position = Arc::new(AtomicU32::new(0));
@@ -43,6 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sink = ui.event_sink();
     let player = Rc::new(tg_platform::Player::start(move |s| {
         if s.audio_token.is_some() {
+            if s.first_frame {
+                first_frame.store(true, Ordering::Release);
+            }
             if s.ended {
                 e.store(true, Ordering::Release);
             }
@@ -57,6 +98,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log = requests.clone();
     let native = player.clone();
     ui.on_video(move |r| {
+        if let VideoRequest::OpenRound { rect, viewport, .. } = &r {
+            println!("round_rect={rect:?} viewport={viewport:?}");
+        }
         if log.borrow().len() < 128 {
             log.borrow_mut().push(r.clone());
         }
@@ -104,9 +148,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(w) = weak.upgrade() {
             match action.as_str() {
                 "move" => w.set_feed_y(w.get_feed_y() + 45.0),
-                "offscreen" => w.set_feed_y(w.get_feed_y() + 900.0),
-                "chat" => state.open(&w, 1),
-                "menu" => w.set_menu_open(true),
+                "offscreen" | "return" | "drag" | "drag-close" | "float-pause"
+                | "floating-measure" => w.set_feed_y(w.get_feed_y() + 900.0),
+                "chat" | "chat-return" | "chat-return-pause" => state.open(&w, 1),
+                "removed" => {
+                    state.round_removed(&w, tg_core::ChatId(1), &[MessageId(19996_i64 * 1048576)])
+                }
+                "other-round" => {
+                    state.attachment_click(&w, &(19995_i64 * 1048576).to_string(), 0, 0.0)
+                }
+                "resize" => w.window().set_size(slint::LogicalSize::new(900.0, 650.0)),
+                "menu" | "menu-return" => w.set_menu_open(true),
                 "pause" => state.attachment_click(&w, &(19996_i64 * 1048576).to_string(), 0, 0.0),
                 "shared" => {
                     let old = log.borrow().iter().find_map(|r| {
@@ -145,31 +197,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    if mode == "measure" {
-        for millis in [4000, 7000, 10000] {
-            let weak = ui.window.as_weak();
-            let state = ui.state.clone();
-            slint::Timer::single_shot(Duration::from_millis(millis), move || {
-                if let Some(w) = weak.upgrade() {
-                    state.video(&w, VideoRequest::Seek(0.0));
-                }
-            });
+    let weak = ui.window.as_weak();
+    let action = mode.clone();
+    slint::Timer::single_shot(Duration::from_millis(2300), move || {
+        if let Some(w) = weak.upgrade() {
+            if action == "return" || action == "chat-return" || action == "chat-return-pause" {
+                w.invoke_round_return();
+            }
+            if action == "menu-return" {
+                w.set_menu_open(false);
+            }
+            if action == "drag" || action == "drag-close" || action == "float-pause" {
+                let (x, y) = (
+                    w.get_round_x() + w.get_round_size() / 2.0,
+                    w.get_round_y() + w.get_round_size() / 2.0,
+                );
+                let (to_x, to_y) = if action == "float-pause" {
+                    (x, y)
+                } else if action == "drag-close" {
+                    (w.get_feed_left() + w.get_feed_view_width() + 200.0, y)
+                } else {
+                    (
+                        w.get_feed_left() + 90.0,
+                        w.get_feed_top() + w.get_feed_height() - 100.0,
+                    )
+                };
+                w.invoke_round_pointer(0, x, y);
+                w.invoke_round_pointer(1, to_x, to_y);
+                w.invoke_round_pointer(2, to_x, to_y);
+            }
         }
+    });
+    let weak = ui.window.as_weak();
+    if mode == "chat-return-pause" {
+        slint::Timer::single_shot(Duration::from_millis(2900), move || {
+            if let Some(w) = weak.upgrade() {
+                w.invoke_attachment_action((19996_i64 * 1048576).to_string().into(), 0, 0.0);
+            }
+        });
     }
     let captured = Rc::new(RefCell::new(None));
+    let native_visible = Rc::new(Cell::new(false));
+    let visible = native_visible.clone();
     let pixels = captured.clone();
     let weak = ui.window.as_weak();
-    let delay = if mode == "hold" || mode == "measure" {
-        14000
+    let delay = if mode == "hold" || mode == "measure" || mode == "floating-measure" {
+        10000
     } else if mode == "ended" {
-        6500
+        14500
     } else if mode == "progress" || mode == "cancel" {
         1000
     } else {
-        2400
+        3200
     };
+    let active_before_exit = Rc::new(Cell::new(None));
+    let active_copy = active_before_exit.clone();
+    let floating_before_exit = Rc::new(Cell::new(false));
+    let floating_copy = floating_before_exit.clone();
+    let state = ui.state.clone();
     slint::Timer::single_shot(Duration::from_millis(delay), move || {
+        active_copy.set(state.feed.audio.get());
         if let Some(w) = weak.upgrade() {
+            floating_copy.set(w.get_round_floating());
+            if let Some(parent) = native_window(w.window()) {
+                let capture = round_probe::visible_region(parent);
+                visible.set(matches!(capture, Ok(true)));
+                println!("native_region={capture:?}");
+            }
             let _ = w.window().take_snapshot();
             *pixels.borrow_mut() = Some(w.window().take_snapshot());
         }
@@ -181,7 +275,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opened = req
         .iter()
         .any(|r| matches!(r, VideoRequest::OpenRound { .. }));
-    let active = observed.feed.audio.get();
+    let active = active_before_exit.get();
+    let floating = floating_before_exit.get();
+    let opens = req
+        .iter()
+        .filter(|r| matches!(r, VideoRequest::OpenRound { .. }))
+        .count();
     let valid = match mode.as_str() {
         "emoji" => (0..observed.feed.row_count())
             .filter_map(|i| observed.feed.row_data(i))
@@ -191,10 +290,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cancel" => !opened && active.is_none(),
         "ended" => opened && ended.load(Ordering::Acquire) && receipts.get() == 1,
         "move" => opened && req.iter().any(|r| matches!(r, VideoRequest::Move(_))),
-        "chat" | "menu" | "offscreen" => {
-            opened && active.is_none() && matches!(req.last(), Some(VideoRequest::Close))
+        "offscreen" | "chat" | "drag" | "floating-measure" => {
+            opened && opens == 1 && floating && native_visible.get()
+        }
+        "return" | "chat-return" => opened && opens == 1 && !floating && native_visible.get(),
+        "removed" => opened && active.is_none() && !floating,
+        "other-round" => opens == 2 && native_visible.get(),
+        "resize" => opened && opens == 1 && native_visible.get(),
+        "drag-close" => opened && active.is_none() && !floating,
+        "menu" => {
+            opened
+                && active.is_some()
+                && req
+                    .iter()
+                    .any(|r| matches!(r, VideoRequest::RoundVisible(false)))
         }
         "pause" => opened && active.is_some_and(|(_, s)| !s.playing),
+        "chat-return-pause" => {
+            opened
+                && opens == 1
+                && !floating
+                && native_visible.get()
+                && active.is_some_and(|(_, s)| !s.playing)
+        }
+        "float-pause" => {
+            opened && opens == 1 && floating && active.is_some_and(|(_, s)| !s.playing)
+        }
+        "menu-return" => opened && opens == 1 && active.is_some() && native_visible.get(),
         "shared" => {
             opened
                 && req
@@ -202,10 +324,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .any(|r| matches!(r, VideoRequest::OpenAudio { .. }))
                 && receipts.get() == 0
         }
-        _ => opened && position.load(Ordering::Acquire) > 500,
-    } && !failed.load(Ordering::Acquire);
+        _ => opened && position.load(Ordering::Acquire) > 500 && native_visible.get(),
+    } && !failed.load(Ordering::Acquire)
+        && (!opened || first.load(Ordering::Acquire));
+    println!("first_frame={}", first.load(Ordering::Acquire));
     println!(
-        "mode={mode} inline_open={opened} ended={} failed={} position_ms={} receipts={} requests={} valid={valid}",
+        "mode={mode} inline_open={opened} opens={opens} floating={floating} ended={} failed={} position_ms={} receipts={} requests={} valid={valid}",
         ended.load(Ordering::Acquire),
         failed.load(Ordering::Acquire),
         position.load(Ordering::Acquire),

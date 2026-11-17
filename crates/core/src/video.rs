@@ -65,6 +65,8 @@ pub enum VideoRequest {
         token: u64,
     },
     RoundViewport(VideoRect),
+    /// Hide round video temporarily behind an in-window menu/dialog, preserving playback.
+    RoundVisible(bool),
     Move(VideoRect),
     TogglePause,
     /// Fraction of the duration, clamped to 0..=1.

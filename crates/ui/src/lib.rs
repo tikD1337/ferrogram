@@ -471,7 +471,11 @@ impl State {
         if !self.send(window, command) {
             return;
         }
-        self.stop_voice(window);
+        if self.round_active() {
+            self.feed.audio.set(None);
+        } else {
+            self.stop_voice(window);
+        }
         self.cancel_action(window);
         self.feed.jump_target.set(None);
         self.feed.highlight.set(None);
@@ -1121,7 +1125,13 @@ impl Ui {
             {
                 let at_bottom =
                     (-w.get_feed_y() + w.get_feed_height()) >= w.get_feed_content_height() - 2.0;
-                w.set_follow_tail(at_bottom && s.feed.history.borrow().at_tail());
+                // Returning to a floating round can briefly leave an empty around page.
+                // Its layout is not a user scroll to the newest message.
+                if s.feed.history.borrow().pending_around.is_none()
+                    && s.feed.jump_target.get().is_none()
+                {
+                    w.set_follow_tail(at_bottom && s.feed.history.borrow().at_tail());
+                }
                 s.refresh(&w);
             }
         });

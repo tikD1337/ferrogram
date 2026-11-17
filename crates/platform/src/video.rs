@@ -147,6 +147,12 @@ impl Player {
                     token: Some(token),
                 })
             }
+            VideoRequest::RoundVisible(visible) => {
+                if let Some(child) = self.window.borrow().as_ref() {
+                    child.visible(visible);
+                }
+                Ok(())
+            }
             VideoRequest::RoundViewport(viewport) => {
                 if let Some(child) = self.window.borrow().as_ref() {
                     child.round(viewport)?;

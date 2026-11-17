@@ -4407,6 +4407,7 @@ dependencies = [
  "swash",
  "tg-core",
  "tg-platform",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

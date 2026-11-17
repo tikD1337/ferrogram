@@ -301,6 +301,11 @@ impl Demo {
                     if let Event::NewerMessagesLoaded { messages: tail, .. } = &mut newer {
                         messages.extend(tail.drain(..).take(25));
                     }
+                    // Both paged halves exclude their cursor. An around response must
+                    // include the anchor itself, including a round we return to from a float.
+                    if let Some(message) = self.lookup(chat, anchor) {
+                        messages.push(message);
+                    }
                     messages.sort_by_key(|m| m.id);
                     while messages.len() > 50 {
                         messages.remove(0);
@@ -773,6 +778,10 @@ pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
             "webp",
             include_bytes!("../assets/demo-sticker.webp").as_slice(),
         ),
+        (
+            "round.mp4",
+            include_bytes!("../assets/demo-round.mp4").as_slice(),
+        ),
         ("ogg", include_bytes!("../assets/demo-voice.ogg").as_slice()),
         ("txt", include_bytes!("../assets/demo-file.txt").as_slice()),
         ("pdf", include_bytes!("../assets/demo-file.pdf").as_slice()),
@@ -786,7 +795,16 @@ pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
     Ok(path)
 }
 pub(crate) fn cleanup_media(path: &std::path::Path) -> std::io::Result<()> {
-    for ext in ["stream.mp4", "mp4", "webp", "ogg", "txt", "pdf", "ps1"] {
+    for ext in [
+        "stream.mp4",
+        "round.mp4",
+        "mp4",
+        "webp",
+        "ogg",
+        "txt",
+        "pdf",
+        "ps1",
+    ] {
         let _ = std::fs::remove_file(path.with_extension(ext));
     }
     std::fs::remove_file(path)
@@ -1087,10 +1105,10 @@ fn demo_attachment(m: &mut Message, kind: i64) {
         15 | 16 => {
             m.photo = Some(demo_photo((100000 + n) as i32));
             let mut f = file(VIDEO_FILE_ID);
-            f.size = include_bytes!("../assets/demo-video.mp4").len() as u64;
+            f.size = include_bytes!("../assets/demo-round.mp4").len() as u64;
             Attachment::Round(tg_core::Round {
                 file: f,
-                duration: 4,
+                duration: 12,
                 length: 240,
                 viewed: kind == 15,
             })
@@ -1157,6 +1175,11 @@ fn demo_file(base: &std::path::Path, id: i32) -> (std::path::PathBuf, u64) {
         }
     } else if id >= 2_000_000 {
         ("ogg", include_bytes!("../assets/demo-voice.ogg").len())
+    } else if id >= VIDEO_FILE_ID && matches!((id - VIDEO_FILE_ID) % 20, 15 | 16) {
+        (
+            "round.mp4",
+            include_bytes!("../assets/demo-round.mp4").len(),
+        )
     } else if id >= VIDEO_FILE_ID {
         ("mp4", include_bytes!("../assets/demo-video.mp4").len())
     } else {

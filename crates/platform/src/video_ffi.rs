@@ -527,6 +527,19 @@ impl ChildWindow {
         self.0 as isize
     }
 
+    pub(crate) fn visible(&self, visible: bool) {
+        // SAFETY: this child is live and owned by the calling UI thread.
+        unsafe {
+            ShowWindow(
+                self.0,
+                if visible {
+                    SW_SHOWNOACTIVATE
+                } else {
+                    windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE
+                },
+            );
+        }
+    }
     pub(crate) fn round(&self, viewport: tg_core::VideoRect) -> Result<(), Error> {
         use windows_sys::Win32::Graphics::Gdi::{
             CombineRgn, CreateEllipticRgn, CreateRectRgn, DeleteObject, RGN_AND, SetWindowRgn,
