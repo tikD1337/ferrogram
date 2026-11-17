@@ -4,6 +4,8 @@ mod console;
 #[allow(unsafe_code)]
 mod ffi;
 mod files;
+#[allow(unsafe_code)]
+mod hardening;
 pub use files::Files;
 #[allow(unsafe_code)]
 mod files_ffi;
@@ -11,6 +13,7 @@ mod video;
 #[allow(unsafe_code)]
 mod video_ffi;
 pub use console::{attach_parent_console, show_error};
+pub use hardening::{Hardening, harden_process};
 use std::sync::mpsc;
 use tg_core::{ChatId, Notification};
 pub use video::Player;

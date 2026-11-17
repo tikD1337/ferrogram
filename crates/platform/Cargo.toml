@@ -1,6 +1,6 @@
 [package]
 name = "tg-platform"
-description = "Windows integration: notifications, media playback, opening files, startup error box."
+description = "Windows integration: notifications, media playback, opening files, startup error box, process hardening."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,4 +15,4 @@ tg-core = { path = "../core" }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
 # Required by the windows::core::implement macro for the Media Engine callback.
 windows-core = "0.62"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }

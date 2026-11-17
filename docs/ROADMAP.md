@@ -159,16 +159,15 @@ zeroed after it is handed to TDLib. The TPM key is not bound to boot state (PCRs
 gesture, so any process running as the same Windows user can ask the TPM to unwrap it. Planned,
 in order of value for cost:
 
-1. **Process hardening (T3, client running).** A process DACL that denies memory reads and thread
-   injection to other processes of the same user; `SetProcessMitigationPolicy` (no dynamic code,
-   no extension points, signed DLLs only, as far as TDLib and the renderer allow);
-   `SetDefaultDllDirectories` for a safe DLL search order. Measure that the client and TDLib still
-   start and that RAM and CPU do not change.
-2. **Lock the key page in memory** with `VirtualLock`, so the key never reaches the page file. The
-   code only zeroes it today (SECURITY.md now says so).
-3. **Recovery when the key cannot be unlocked.** Today a TPM refusal left a bare error code. Show a
-   clear screen instead: move the old key and database to a dated backup folder and sign in again;
-   the chats come back from the server. Nothing is deleted without the user's confirmation.
+1. **Process hardening (T3, client running).** Done 2026-11-17: process DACL, System32-only DLL
+   search (as Telegram Desktop) and the image load policy. Signed-only images would refuse TDLib;
+   the no-dynamic-code and extension-point policies are untried (known driver and input-method
+   conflicts) and remain a later, measured step. Details in SECURITY.md.
+2. **Lock the key page in memory** with `VirtualLock`. Done 2026-11-17.
+3. **Recovery when the key cannot be unlocked.** Done 2026-11-17: a screen with Try again and
+   Start fresh; Start fresh renames the data directory to a dated backup and starts with a new
+   key. Tested on the real key file that stopped unlocking on 2026-11-17. The cause of that
+   failure (TPM decrypt 0x80280084 on an unchanged key file) is still unknown.
 4. **Master password (T2, client closed).** Optional, off by default (decided 2026-11-16). Argon2id
    from an audited RustCrypto implementation, wrapping added as the third layer; asked at start.
    It is the only measure that stops malware running as the same user from unwrapping the key.
@@ -219,3 +218,40 @@ Promises and open items found in the other documents that had no place in this p
 - Review the Telegram API terms for third-party clients before the first public release.
 - A distributable package (an archive or an installer) and release notes.
 
+
+## User review (2026-11-17): what the client lacks next to Telegram Desktop
+
+The user compared Ferrogram with AyuGram (the same interface as Telegram Desktop) side by side on a
+live account; the screenshot stays outside the repository because it shows private chats. The
+client "feels very empty". Each item is designed from Telegram Desktop's own sources first (the
+same behaviour or measurably better), with its RAM and CPU cost measured.
+
+**Messages**
+
+- Animated stickers. TGS (Lottie) and WebM stickers play; today only their first frame or
+  thumbnail is drawn. Animation runs only for visible stickers in the active window.
+- Working links. URLs, `t.me` links (open the chat or post inside the client), mentions and
+  hashtags are clickable; link previews under messages.
+- Group feeds: sender avatars beside messages, admin and custom title badges, reactions under
+  messages, the pinned message bar at the top of the chat.
+
+**Composer**
+
+- A panel with emoji, stickers (installed sets and recent) and GIFs (saved and search), opened
+  from the composer, as in Telegram.
+- No input field where the user cannot write. In a channel without posting rights, show a Mute or
+  Unmute bar, or Join when not subscribed. Groups with restricted rights show the restriction.
+
+**Navigation**
+
+- The main menu behind the three lines, as in Telegram: account header, My profile, Settings,
+  Saved Messages, night mode and the other entries, leading to real settings screens.
+- The folder bar (All chats and the user's folders) and a search field above the chat list.
+- Chat list rows as in Telegram: "You:" before own last messages, read checks, pinned and muted
+  marks, chat type and verified icons, drafts.
+
+**Profiles**
+
+- A click on the avatar or title in the chat header opens the profile: for a user, a group or a
+  channel, with the description, members or subscribers, shared media and links. The header shows
+  the member count or the online status under the title, plus search in chat and the other actions.

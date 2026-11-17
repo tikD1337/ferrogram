@@ -51,6 +51,72 @@ impl<T: AsMut<[u8]>> Drop for Zeroing<T> {
     }
 }
 
+/// The 32 key bytes on a private page of their own, locked into RAM so the key never reaches the
+/// page file. The page is zeroed, unlocked and released on drop. Locking is best effort: Windows
+/// may refuse it when the working-set quota is exhausted, and the key still works then.
+pub(super) struct LockedKey {
+    page: std::ptr::NonNull<[u8; 32]>,
+    locked: bool,
+}
+
+// SAFETY: LockedKey uniquely owns its page; nothing else aliases it.
+unsafe impl Send for LockedKey {}
+unsafe impl Sync for LockedKey {}
+
+impl LockedKey {
+    pub(super) fn new() -> Result<Self, Error> {
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualLock,
+        };
+        // SAFETY: a fresh read-write allocation of one page; a null result is handled. The OS
+        // zero-fills committed pages, so the array is initialized.
+        let raw = unsafe {
+            VirtualAlloc(
+                std::ptr::null(),
+                4096,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        let page = std::ptr::NonNull::new(raw.cast::<[u8; 32]>()).ok_or(Error::Native {
+            operation: "key page allocation",
+            code: 0,
+        })?;
+        // SAFETY: the address and size describe the page committed above.
+        let locked = unsafe { VirtualLock(raw, 4096) } != 0;
+        Ok(Self { page, locked })
+    }
+    pub(super) fn bytes(&self) -> &[u8; 32] {
+        // SAFETY: the page is live and owned for &self's lifetime and was zero-initialized.
+        unsafe { self.page.as_ref() }
+    }
+    pub(super) fn bytes_mut(&mut self) -> &mut [u8; 32] {
+        // SAFETY: &mut self guarantees exclusive access to the owned, initialized page.
+        unsafe { self.page.as_mut() }
+    }
+    #[cfg(test)]
+    pub(super) fn is_locked(&self) -> bool {
+        self.locked
+    }
+}
+
+impl Drop for LockedKey {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree, VirtualUnlock};
+        // Zero while the page is still locked, then unlock and release it.
+        wipe(self.bytes_mut());
+        let raw = self.page.as_ptr().cast::<core::ffi::c_void>();
+        // SAFETY: the page was allocated (and possibly locked) by `new`, is released exactly once
+        // here, and no reference to it outlives this call.
+        unsafe {
+            if self.locked {
+                VirtualUnlock(raw, 4096);
+            }
+            VirtualFree(raw, 0, MEM_RELEASE);
+        }
+    }
+}
+
 fn wipe(bytes: &mut [u8]) {
     for byte in bytes {
         // SAFETY: each pointer comes from an exclusive reference to an initialized

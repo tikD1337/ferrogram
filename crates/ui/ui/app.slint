@@ -213,6 +213,8 @@ export component AppWindow inherits Window {
     callback drain-events();
     callback auth-submit();
     callback request-qr();
+    callback local-retry();
+    callback local-reset();
     callback open-chat(index: int);
     // Opens the video of a feed cell in the separate media viewer window.
     callback open-video(row: int, cell: int);
@@ -313,7 +315,23 @@ export component AppWindow inherits Window {
                     }
                     Text { text: "Open Telegram on your phone, go to Settings > Devices > Link Desktop Device and scan this code."; color: Theme.muted; font-size: Theme.type-body; horizontal-alignment: center; wrap: word-wrap; }
                 }
-                if root.auth-step >= 2: HorizontalLayout { alignment: center;
+                // 5: the local database key cannot be unlocked (TPM or DPAPI refused it).
+                if root.auth-step == 5: HorizontalLayout { alignment: center;
+                    VerticalLayout {
+                        width: 400px; spacing: 12px;
+                        Text {
+                            text: "Ferrogram cannot unlock its local data on this computer: Windows refused the key that protects it. Your account is safe, and your chats are stored on Telegram's servers.";
+                            color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Start fresh to sign in again with a new key. The old data is moved to a backup folder next to it; nothing is deleted.";
+                            color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; horizontal-alignment: center;
+                        }
+                        Action { text: "START FRESH"; enabled: !root.blocked; clicked => { root.local-reset(); } }
+                        Link { text: "Try again"; enabled: !root.blocked; clicked => { root.local-retry(); } }
+                    }
+                }
+                if root.auth-step >= 2 && root.auth-step <= 4: HorizontalLayout { alignment: center;
                     VerticalLayout {
                         width: 340px; spacing: 12px;
                         Text { text: root.auth-step == 2 ? "Please confirm your country code and enter your phone number." : root.auth-step == 3 ? "Enter the code Telegram sent you." : "Your account is protected with an additional password."; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; horizontal-alignment: center; }

@@ -1,8 +1,9 @@
 # Telegram session protection
 
-Status: **accepted 2026-11-16, partly implemented.** Done: the TPM + DPAPI key chain and zeroing of
-our copy of the key. Not done yet: page locking, process hardening, the master password, Windows
-Hello and automatic locking. The order is in [ROADMAP.md](ROADMAP.md), "Security work".
+Status: **accepted 2026-11-16, partly implemented.** Done: the TPM + DPAPI key chain, the key on a
+locked page and zeroed, process hardening (2026-11-17) and a recovery screen when the key cannot be
+unlocked (2026-11-17). Not done yet: the master password, Windows Hello and automatic locking. The
+order is in [ROADMAP.md](ROADMAP.md), "Security work".
 
 ## Goal
 
@@ -67,20 +68,45 @@ research: the standard API provides signing, rather than decryption. Investigate
 
 ### In memory
 
-- The DEK lives in a zeroing wrapper, and our copy is zeroed after being passed to TDLib.
-  Locking its page with `VirtualLock` to keep it out of the page file is planned, not done.
+- The DEK lives on a private page of its own (`VirtualAlloc`), locked into RAM with `VirtualLock`
+  so it never reaches the page file, and is zeroed before the page is unlocked and released. Our
+  copy is dropped right after it is passed to TDLib. Locking is best effort: if Windows refuses it
+  (working-set quota), the key still works without it.
 - We have no control over keys inside TDLib: this is memory owned by a C++ library.
 - Automatic locking: an idle timer shuts down TDLib, removing keys from memory.
   The tradeoff is no notifications while locked. Two modes to choose from:
   lock only the UI or lock fully.
 
-### Process hardening (against T3)
+### Process hardening (against T3), implemented 2026-11-17
 
-- Deny memory reads and thread injection by processes running as the same user
-  through the process DACL. Stops typical stealers without administrator privileges.
-- `SetProcessMitigationPolicy` policies: prohibit dynamic code, extension points,
-  and loading unsigned DLLs — as far as compatibility with TDLib and the renderer allows.
-- Safe DLL search order to prevent library substitution.
+`tg_platform::harden_process`, called first thing in `main`:
+
+- **Process DACL.** Programs running as the same user may query, wait for and end the process
+  (Task Manager keeps working), but not read or write its memory, create threads in it, duplicate
+  its handles or change its permissions. An OWNER RIGHTS entry removes the owner's implicit right
+  to rewrite the DACL. SYSTEM keeps full access. Stops typical stealers without administrator
+  rights; an administrator with SeDebugPrivilege still gets in.
+- **DLL search order**, as Telegram Desktop does: libraries loaded by name come only from System32
+  (`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`). TDLib is loaded by absolute path
+  with its own directory for its dependencies.
+- **Image load policy:** no images from network shares or low-integrity locations.
+- Not enabled: signed-only images, because TDLib and its OpenSSL DLLs are not Microsoft-signed and
+  would be refused. Prohibiting dynamic code and disabling extension points were not tried: both are
+  known to conflict with graphics drivers and legacy input methods, and need a measured trial first.
+
+Verified on 2026-11-17: an automated test opens its own hardened process by PID and gets
+access-denied for memory reads and DACL changes; the demo, video playback (child window present),
+voice playback (position advancing) and the live client with TDLib all work with it. The cost in
+RAM and CPU has not been measured separately; it is a handful of system calls at startup.
+
+### When the key cannot be unlocked
+
+If the key file exists but the TPM or DPAPI refuses it (or it is not a format this build reads),
+the engine does not start and the client explains the situation with two choices: **Try again**,
+or **Start fresh**, which renames the data directory to `<name>-backup-<UTC date and time>` next
+to it and starts with a new key. Nothing is deleted. Telegram Desktop in the same situation
+silently starts from scratch and overwrites its local data. I/O and directory errors never offer
+a fresh start.
 
 This raises the cost of an attack, but is not a security boundary.
 

@@ -791,6 +791,11 @@ impl State {
                 );
             }
             Event::SecurityWarning(_) => window.set_security_warning(true),
+            Event::LocalDataLocked => {
+                window.set_ready(false);
+                window.set_auth_step(5);
+                window.set_auth_title("Local data is locked".into());
+            }
             _ => {}
         }
     }
@@ -1028,6 +1033,27 @@ impl Ui {
                 s.send(&w, command);
             }
         });
+        let local: [(bool, fn() -> Command); 2] = [
+            (false, || Command::RetryLocalData),
+            (true, || Command::ResetLocalData),
+        ];
+        for (reset, command) in local {
+            let weak = window.as_weak();
+            let s = state.clone();
+            let handler = move || {
+                if let Some(w) = weak.upgrade() {
+                    // The screen stays until the application reports the next auth state.
+                    w.set_error("".into());
+                    w.set_auth_title(if reset { "Starting fresh" } else { "Unlocking" }.into());
+                    s.send(&w, command());
+                }
+            };
+            if reset {
+                window.on_local_reset(handler);
+            } else {
+                window.on_local_retry(handler);
+            }
+        }
         let weak = window.as_weak();
         let s = state.clone();
         window.on_request_qr(move || {
