@@ -247,6 +247,19 @@ impl Feed {
     pub fn invalidate(&self) {
         self.visible.borrow_mut().clear();
     }
+    /// Redraws the visible row that holds `id`, if any. For changes `row_data` applies itself
+    /// (voice and round progress, download state, listened marks): the row keeps its cached
+    /// rasters and stays on screen, and no other row is re-created.
+    pub fn notify_message(&self, id: MessageId) {
+        let index = self
+            .visible
+            .borrow()
+            .iter()
+            .position(|row| row.context.members.contains(&id));
+        if let Some(index) = index {
+            self.notify.row_changed(index);
+        }
+    }
     pub fn invalidate_message(&self, id: MessageId) {
         self.visible
             .borrow_mut()
@@ -1359,6 +1372,43 @@ mod action_tests {
             sender: None,
             photo: None,
         }
+    }
+    #[test]
+    fn a_playback_or_download_update_keeps_the_row_on_screen() {
+        // Voice/round progress and download state are applied in row_data, so an update only
+        // redraws that row. Dropping it from the visible rows made the message vanish until the
+        // next layout, and resetting the whole model re-created every row (flicker).
+        let feed = Feed::new(None);
+        {
+            let mut h = feed.history.borrow_mut();
+            h.chat = Some(ChatId(7));
+            h.messages = (19991..=20000)
+                .map(|n| {
+                    let mut m = message(n);
+                    m.album = 0;
+                    m.is_text = true;
+                    m.text = format!("Message {n}");
+                    m
+                })
+                .collect();
+        }
+        feed.layout(0.0, 2000.0, false);
+        let rows = feed.row_count();
+        let id = MessageId(19995 * 1048576);
+        let has = |feed: &Feed| {
+            (0..feed.row_count())
+                .any(|i| feed.row_data(i).is_some_and(|r| r.key == id.0.to_string()))
+        };
+        assert!(rows > 0 && has(&feed));
+        feed.notify_message(id);
+        assert_eq!(feed.row_count(), rows);
+        assert!(has(&feed), "the updated message stays visible");
+        feed.notify_message(MessageId(1));
+        assert_eq!(
+            feed.row_count(),
+            rows,
+            "an off-screen message changes nothing"
+        );
     }
     #[test]
     fn quoted_message_jump_survives_refresh_while_around_page_is_pending() {

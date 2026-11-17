@@ -148,7 +148,7 @@ impl State {
                 self.send(w, Command::CancelDownload(current.file.id));
             }
             self.feed.audio.set(None);
-            self.feed.notify.reset();
+            self.feed.notify_message(current.message);
         }
     }
     pub(super) fn voice_state(&self, w: &AppWindow, state: VideoState) {
@@ -171,7 +171,8 @@ impl State {
         }
         drop(current);
         self.feed.audio.set(Some((id, state)));
-        self.feed.notify.reset();
+        // Every player event lands here, several per second: redraw only this row.
+        self.feed.notify_message(id);
         if let Some(fraction) = seek {
             self.video(w, VideoRequest::Seek(fraction));
         }
@@ -242,7 +243,7 @@ impl State {
         } else {
             self.set_download_state(message.id, true);
         }
-        self.feed.notify.reset();
+        self.feed.notify_message(message.id);
     }
     pub(super) fn attachment_click(&self, w: &AppWindow, key: &str, action: i32, fraction: f32) {
         let Ok(id) = key.parse::<i64>().map(MessageId) else {
@@ -281,11 +282,9 @@ impl State {
                 } else if document.file.downloading {
                     if self.send(w, Command::CancelDownload(document.file.id)) {
                         self.set_download_state(message.id, false);
-                        self.refresh(w);
                     }
                 } else if self.send(w, Command::DownloadFileUrgent(document.file.id)) {
                     self.set_download_state(message.id, true);
-                    self.refresh(w);
                 }
             }
             _ => {}
@@ -307,7 +306,7 @@ impl State {
                 _ => {}
             }
         }
-        self.feed.invalidate_message(id);
+        self.feed.notify_message(id);
     }
     fn file_request(&self, w: &AppWindow, request: FileRequest) {
         let result = self.attachments.files.borrow().as_ref().map_or_else(
@@ -380,9 +379,9 @@ impl State {
         if let Some((path, token, round)) = ready {
             self.start_attachment_player(w, path, token, round);
         }
-        if !changed.is_empty() {
-            // Progress/path changes do not alter row geometry: keep caption rasters and anchors.
-            self.feed.notify.reset();
+        // Progress/path changes do not alter row geometry: keep caption rasters and anchors.
+        for id in changed {
+            self.feed.notify_message(id);
         }
     }
     fn round_rect(&self, w: &AppWindow, id: MessageId) -> Option<(VideoRect, VideoRect)> {
@@ -474,7 +473,7 @@ impl State {
     pub(super) fn clear_file_confirmation(&self) {
         self.attachments.confirm.borrow_mut().take();
     }
-    pub(super) fn content_opened(&self, w: &AppWindow, chat: ChatId, id: MessageId) {
+    pub(super) fn content_opened(&self, chat: ChatId, id: MessageId) {
         if let Some(m) = self
             .feed
             .history
@@ -489,8 +488,7 @@ impl State {
                 _ => {}
             }
         }
-        self.feed.invalidate_message(id);
-        self.refresh(w);
+        self.feed.notify_message(id);
     }
 }
 pub(super) fn bind(w: &AppWindow, state: &Rc<State>) {
