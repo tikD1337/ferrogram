@@ -364,6 +364,52 @@ no media bytes: Media Foundation reads into its own buffers, and the reader hold
 downloaded-range records. Binary size: 13,679,104 -> 13,756,416 bytes (+0.57 %). Not measured
 on a live account yet.
 
+## Three clients playing the same video (2026-11-17)
+
+Ferrogram (release build of the `video-streaming` branch), Telegram Desktop 7.4.4 and AyuGram
+7.2.9 ran at the same time; each was measured alone while the others stayed idle in the
+background. All three had the same channel post open, a 17.3 s H.264 clip, 1080x1080 at 60 fps,
+and were maximized on a 2560x1440 monitor. Every client had played the clip once before, so the
+file came from the local cache, not from the network: this compares playback, not streaming.
+Sampled once a second with the functions of `scripts/measure-video.ps1`; the phases were driven
+by hand: chat open for 20 s, then the viewer opened and the clip played to the end (19 s), then
+the viewer closed for 20 s.
+
+| Phase | Metric | Ferrogram | Telegram Desktop | AyuGram |
+|---|---|---|---|---|
+| Chat open | Private Bytes, MB | 105.5 | 844.8 | 1476.3 |
+| | CPU, % of one core | 0.3 | 85.9 | 82.2 |
+| | Threads | 20 | 121 | 145 |
+| Playing | Private Bytes, MB (max) | 188.5 (189.4) | 973.8 (1014.4) | 1667.4 (1667.8) |
+| | Working set, MB | 210.5 | 867.0 | 1195.8 |
+| | CPU, % of one core (max) | 6.5 (21.7) | 53.9 (94.6) | 30.7 (72.7) |
+| | GPU video decode engine, % | 3.6 | 0 | 3.7 |
+| | GPU 3D engine, % | 0.1 | 4.6 | 4.7 |
+| | GPU memory (dedicated + shared), MB | 102.5 | 202.9 | 242.8 |
+| | Threads | 57 | 169 | 171 |
+| Viewer closed | Private Bytes, MB (max) | 105.7 (132.3) | 971.2 (974.5) | 1599.5 (1640.6) |
+| | CPU, % of one core | 0.1 | 84.7 | 80.2 |
+| | GPU memory, MB | 0 | 191.8 | 143.1 |
+
+Findings:
+
+- Ferrogram and AyuGram decode on the GPU (video decode engine busy about 3.6 %); Telegram
+  Desktop decoded this clip on the CPU (video decode engine at 0).
+- While playing, Ferrogram used about 8 times less CPU than Telegram Desktop and 5 times less
+  than AyuGram, and 5 to 9 times less private memory.
+- After the viewer closed, Ferrogram returned to its chat-open memory (105.7 MB) and released
+  its GPU memory; the other two kept 140-190 MB of GPU memory and the memory they gained.
+
+Not like-for-like, read with care:
+
+- Telegram Desktop and AyuGram autoplay videos in the chat feed without sound by default, so
+  their "chat open" and "viewer closed" CPU (80-86 % of a core) is mostly that autoplay.
+  Ferrogram shows a still preview. A run with autoplay switched off was not made.
+- The chat lists of the clients differ (AyuGram shows other chats and folders), so their
+  baseline memory is not only the cost of the client itself.
+- One run per client, short phases (18-19 samples). Ferrogram's viewer is drawn inside its
+  window; the other two open their viewer over the whole monitor.
+
 ## Media messages (2026-11-17)
 
 Release build (`ferrogram.exe`, 13,679,104 bytes, up from about 13.0 MB before this work). Demo
