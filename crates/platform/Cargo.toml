@@ -1,6 +1,6 @@
 [package]
 name = "tg-platform"
-description = "Windows integration: notifications, tray, process hardening."
+description = "Windows integration: notifications, media playback, opening files, startup error box."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -170,8 +170,8 @@ the custom message text component as the solution; awaiting approval.
 | `core` | Domain types, commands and events, state, cache budgets. No FFI or UI | — |
 | `telegram` | TDLib wrapper, engine thread | `core` |
 | `ui` | Slint UI and view models | `core` |
-| `security` | Database key protection: TPM, DPAPI, master password, memory | — |
-| `platform` | Windows: notifications, tray, process hardening | — |
+| `security` | Database key protection: TPM and DPAPI; master password and memory locking planned | — |
+| `platform` | Windows: notifications, video and audio (Media Foundation), opening files, startup error box; tray and process hardening planned | — |
 
 `media` and `storage` will appear when there is code for them. With TDLib, separate message
 storage is unnecessary — it is inside the library. Measurements live in `scripts/` and `bench/`.

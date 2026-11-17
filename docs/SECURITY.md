@@ -1,6 +1,8 @@
 # Telegram session protection
 
-Status: **proposal, awaiting approval.** Nothing described here has been implemented yet.
+Status: **accepted 2026-11-16, partly implemented.** Done: the TPM + DPAPI key chain and zeroing of
+our copy of the key. Not done yet: page locking, process hardening, the master password, Windows
+Hello and automatic locking. The order is in [ROADMAP.md](ROADMAP.md), "Security work".
 
 ## Goal
 
@@ -65,8 +67,8 @@ research: the standard API provides signing, rather than decryption. Investigate
 
 ### In memory
 
-- The DEK lives in a `zeroize` wrapper, with its page locked through `VirtualLock` to keep it
-  out of the page file. Our copy is zeroed after being passed to TDLib.
+- The DEK lives in a zeroing wrapper, and our copy is zeroed after being passed to TDLib.
+  Locking its page with `VirtualLock` to keep it out of the page file is planned, not done.
 - We have no control over keys inside TDLib: this is memory owned by a C++ library.
 - Automatic locking: an idle timer shuts down TDLib, removing keys from memory.
   The tradeoff is no notifications while locked. Two modes to choose from:

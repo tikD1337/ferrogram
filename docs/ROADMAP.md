@@ -18,8 +18,10 @@ supported until it has been implemented and tested.
 - [x] Slint feed prototype: 10 000 synthetic messages, memory, CPU and scrolling measurements —
       2026-11-15, `spikes/slint-feed`. The memory and CPU hypothesis is confirmed; questions remain
       about color emoji and text selection (see [ARCHITECTURE.md](ARCHITECTURE.md), section 3).
-- [ ] Resolve the color emoji question: renderer or custom rendering.
-- [ ] Extend the prototype: load earlier history without jumps, images in messages, a large window (4K).
+- [x] Resolve the color emoji question: renderer or custom rendering — 2026-11-15: custom message
+      text rendering with parley and swash (ARCHITECTURE.md, section 3).
+- [x] Extend the prototype: load earlier history without jumps, images in messages — done in the
+      product instead (2026-11-16). A 4K window has not been measured.
 
 **Exit:** the choice of TDLib and Slint is confirmed by measurements or reconsidered.
 
@@ -29,13 +31,16 @@ Result: [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md).
 
 ## Stage 2. Minimal working client
 
-- [ ] Engine thread: start TDLib, `td_receive` loop, domain events.
-- [ ] Database key protection: TPM + DPAPI (after approval of [SECURITY.md](SECURITY.md)).
-- [ ] Authentication: phone number, code, 2FA password.
-- [ ] Virtualized chat list.
-- [ ] Message viewing: history window, loading by page.
-- [ ] Send text.
-- [ ] Network and authentication errors are shown to the user rather than lost.
+- [x] Engine thread: start TDLib, `td_receive` loop, domain events.
+- [x] Database key protection: TPM + DPAPI (after approval of [SECURITY.md](SECURITY.md)).
+- [x] Authentication: phone number, code, 2FA password, and QR code. Phone sign-in confirmed on a
+      live account 2026-11-17.
+- [x] Virtualized chat list.
+- [x] Message viewing: history window, loading by page.
+- [x] Send text.
+- [x] Network and authentication errors are shown to the user rather than lost.
+
+Done 2026-11-16, used daily on a live account since then.
 
 **Exit:** users can sign in, read and write text; all checks (`fmt`, `clippy`, `test`) pass.
 
@@ -53,12 +58,15 @@ Result: [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md).
 
 Ordered by frequency of use:
 
-1. Images and documents, downloading and sending.
-2. Replies, forwarding, editing, deletion.
-3. Windows notifications, tray, counters.
-4. Reactions, stickers, GIF.
+1. Images and documents, downloading and sending. Downloading and viewing done (photos 2026-11-16,
+   files 2026-11-17); sending media is not done.
+2. Replies, forwarding, editing, deletion. Done 2026-11-16.
+3. Windows notifications, tray, counters. Notifications and counters done 2026-11-16; a tray mode
+   that unloads the UI is not done.
+4. Reactions, stickers, GIF. Static stickers done 2026-11-17; reactions, animated stickers and GIF
+   are not done.
 5. Search.
-6. Voice messages.
+6. Voice messages. Playback done 2026-11-17; recording is not done.
 7. Folders, archive, settings, themes.
 8. Multiple accounts.
 9. Master password, Windows Hello, automatic locking.
@@ -156,8 +164,8 @@ in order of value for cost:
    no extension points, signed DLLs only, as far as TDLib and the renderer allow);
    `SetDefaultDllDirectories` for a safe DLL search order. Measure that the client and TDLib still
    start and that RAM and CPU do not change.
-2. **Lock the key page in memory.** SECURITY.md says the key page is locked with `VirtualLock`; the
-   code only zeroes it. Implement it, or correct the document.
+2. **Lock the key page in memory** with `VirtualLock`, so the key never reaches the page file. The
+   code only zeroes it today (SECURITY.md now says so).
 3. **Recovery when the key cannot be unlocked.** Today a TPM refusal left a bare error code. Show a
    clear screen instead: move the old key and database to a dated backup folder and sign in again;
    the chats come back from the server. Nothing is deleted without the user's confirmation.
@@ -175,3 +183,39 @@ in order of value for cost:
 Out of scope, as decided in SECURITY.md: a Chrome-style SYSTEM service for application binding,
 and anti-debugging or obfuscation. Malware with administrator or kernel rights (T4) cannot be
 stopped by any user-mode client.
+
+## Documented but not yet planned (2026-11-17)
+
+Promises and open items found in the other documents that had no place in this plan.
+
+**Text and emoji** (ARCHITECTURE.md, sections 3 and 7)
+
+- Text selection inside messages and copying the selection. The prototype had it; the client
+  only copies a whole message from the menu.
+- The Apple emoji set, loaded from a local directory and never committed, plus a freely licensed
+  fallback set for public builds. Today only an optional emoji font (`TG_EMOJI_FONT`) is supported.
+- Custom emoji inside text (stickers in the line).
+- Screen reader accessibility: message text is drawn as an image, so its text must be exposed
+  separately.
+
+**Themes** (ARCHITECTURE.md, section 7)
+
+- Finish the OLED theme: chat list, panels, hover and selection states, and no large static bright
+  areas that could burn in.
+
+**Security** (SECURITY.md)
+
+- Run `cargo audit` and `cargo deny` in CI.
+- Recommend two-step verification in the interface, next to the list of active sessions.
+- Check what happens to the key after a TPM reset or a firmware update, and on a machine without
+  a TPM (the DPAPI-only fallback with its warning).
+- TDLib does not encrypt downloaded files. Decide whether to accept and document this, or to keep
+  the cache in a protected location and clear it on lock.
+
+**Release** (ARCHITECTURE.md, section 6)
+
+- How users get `tdjson.dll`: release builds from official TDLib source at a pinned commit, with
+  the hash recorded and verified.
+- Review the Telegram API terms for third-party clients before the first public release.
+- A distributable package (an archive or an installer) and release notes.
+

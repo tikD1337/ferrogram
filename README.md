@@ -132,7 +132,7 @@ flowchart LR
     APP["tg-app<br/>wiring"] --- UI
     APP --- ENGINE
     APP --- SEC["tg-security<br/>TPM + DPAPI key"]
-    APP --- PLAT["tg-platform<br/>notifications"]
+    APP --- PLAT["tg-platform<br/>Windows: notifications, media, files"]
 ```
 
 - The UI and the engine talk only through plain types from `tg-core`; only `tg-telegram` touches
@@ -163,7 +163,7 @@ Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHIT
 | `crates/telegram` | TDLib-based engine; the only crate that talks to TDLib |
 | `crates/ui` | Slint user interface; the only crate that uses Slint |
 | `crates/security` | Database key protection (TPM, DPAPI) |
-| `crates/platform` | Windows integration: notifications |
+| `crates/platform` | Windows integration: notifications, video and audio playback (Media Foundation), opening files, startup error box |
 | `spikes/` | Throwaway prototypes used for measurements, not part of the product |
 | `scripts/` | Resource measurement and TDLib build scripts |
 | `bench/results/` | Raw measurement data |
