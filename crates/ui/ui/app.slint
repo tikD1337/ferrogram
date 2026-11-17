@@ -295,7 +295,10 @@ export component AppWindow inherits Window {
                     }
                     chat-list := ListView {
                         changed visible-height => { root.chat-height = self.visible-height; }
-                        scrolled => { root.chat-y = self.content-y; if root.chat-near-end && root.more-chats { root.load-chats(); } }
+                        // Bound to the position itself, so the wheel animation updates it on every
+                        // frame; `scrolled` fires only for the input event that started it.
+                        content-y <=> root.chat-y;
+                        scrolled => { if root.chat-near-end && root.more-chats { root.load-chats(); } }
                         in property <int> chat-count: root.chats.length;
                         changed chat-count => { if root.chat-near-end && root.more-chats { root.load-chats(); } }
                         for chat[index] in root.chats: Rectangle {

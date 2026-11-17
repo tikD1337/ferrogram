@@ -307,8 +307,9 @@ impl State {
         self.chats.scale.set(self.feed.scale.get());
         for chat in rows
             .iter()
-            .skip(first.saturating_sub(1))
-            .take(count.min(31))
+            // Three spare rows on each side: avatars are small and appear before they scroll in.
+            .skip(first.saturating_sub(3))
+            .take((count + 4).min(40))
         {
             if window.get_ready()
                 && let Some(photo) = &chat.avatar
@@ -873,6 +874,9 @@ impl Ui {
         window.on_chat_viewport_changed(move || {
             if let Some(w) = weak.upgrade() {
                 s.sync_media(&w);
+                if w.get_chat_near_end() && w.get_more_chats() {
+                    w.invoke_load_chats();
+                }
             }
         });
         let sink = EventSink::new(&window);

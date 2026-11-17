@@ -15,7 +15,8 @@ use tg_core::{Command, MediaFile, Photo};
 // Shared by avatars and message photos. 24 MiB is the initial decoded-media budget;
 // text rasters have the existing separate budget. Entries own the only media cache.
 const CACHE_BYTES: usize = 24 * 1024 * 1024;
-const MAX_DEMAND: usize = 96;
+// Feed cells (<=64) + chat-list avatars (<=40) + the header avatar, with room to spare.
+const MAX_DEMAND: usize = 112;
 const JOBS: usize = 16;
 const MAX_ENCODED: u64 = 8 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
