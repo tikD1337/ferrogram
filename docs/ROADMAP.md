@@ -219,3 +219,40 @@ Promises and open items found in the other documents that had no place in this p
 - Review the Telegram API terms for third-party clients before the first public release.
 - A distributable package (an archive or an installer) and release notes.
 
+
+## User review (2026-11-17): what the client lacks next to Telegram Desktop
+
+The user compared Ferrogram with AyuGram (the same interface as Telegram Desktop) side by side on a
+live account; the screenshot stays outside the repository because it shows private chats. The
+client "feels very empty". Each item is designed from Telegram Desktop's own sources first (the
+same behaviour or measurably better), with its RAM and CPU cost measured.
+
+**Messages**
+
+- Animated stickers. TGS (Lottie) and WebM stickers play; today only their first frame or
+  thumbnail is drawn. Animation runs only for visible stickers in the active window.
+- Working links. URLs, `t.me` links (open the chat or post inside the client), mentions and
+  hashtags are clickable; link previews under messages.
+- Group feeds: sender avatars beside messages, admin and custom title badges, reactions under
+  messages, the pinned message bar at the top of the chat.
+
+**Composer**
+
+- A panel with emoji, stickers (installed sets and recent) and GIFs (saved and search), opened
+  from the composer, as in Telegram.
+- No input field where the user cannot write. In a channel without posting rights, show a Mute or
+  Unmute bar, or Join when not subscribed. Groups with restricted rights show the restriction.
+
+**Navigation**
+
+- The main menu behind the three lines, as in Telegram: account header, My profile, Settings,
+  Saved Messages, night mode and the other entries, leading to real settings screens.
+- The folder bar (All chats and the user's folders) and a search field above the chat list.
+- Chat list rows as in Telegram: "You:" before own last messages, read checks, pinned and muted
+  marks, chat type and verified icons, drafts.
+
+**Profiles**
+
+- A click on the avatar or title in the chat header opens the profile: for a user, a group or a
+  channel, with the description, members or subscribers, shared media and links. The header shows
+  the member count or the online status under the title, plus search in chat and the other actions.
