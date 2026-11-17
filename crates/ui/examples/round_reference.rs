@@ -4,9 +4,6 @@ include!("../src/lib.rs");
 #[path = "../../app/src/demo.rs"]
 #[allow(dead_code)]
 mod demo_backend;
-#[path = "support/round_probe.rs"]
-#[allow(unsafe_code)]
-mod round_probe;
 use slint::Model;
 use std::sync::{
     Arc,
@@ -260,8 +257,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(w) = weak.upgrade() {
             floating_copy.set(w.get_round_floating());
             if let Some(parent) = native_window(w.window()) {
-                let capture = round_probe::visible_region(parent);
-                visible.set(matches!(capture, Ok(true)));
+                let capture = tg_platform::video_window_shown(parent);
+                visible.set(capture == Some(true));
                 println!("native_region={capture:?}");
             }
             let _ = w.window().take_snapshot();

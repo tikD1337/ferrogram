@@ -676,7 +676,7 @@ impl State {
                     self.start_video(window, path);
                 }
             }
-            Event::MessageContentOpened {chat,message}=>self.content_opened(window,chat,message),
+            Event::MessageContentOpened {chat,message}=>self.content_opened(chat,message),
             Event::FileDownloadFailed(id)=>{
                 let streaming=self.streaming.borrow().as_ref().is_some_and(|s|s.file.id==id);
                 if streaming {

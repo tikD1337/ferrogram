@@ -473,6 +473,45 @@ pub(crate) struct ChildWindow(
     std::cell::Cell<Option<tg_core::VideoRect>>,
 );
 
+/// Whether the player's video window under `parent` is visible with a non-empty window region.
+/// Used by reference checks; hardware video pixels cannot be read back. `None` when there is no
+/// video window.
+pub(crate) fn video_window_shown(parent: isize) -> Option<bool> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, NULLREGION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, IsWindowVisible};
+    let class: Vec<u16> = "FerrogramVideo\0".encode_utf16().collect();
+    // SAFETY: `parent` is a live window of this thread and `class` is NUL terminated; the
+    // temporary region is created and deleted here, and the child handle is only queried.
+    unsafe {
+        let child = FindWindowExW(
+            parent as HWND,
+            std::ptr::null_mut(),
+            class.as_ptr(),
+            std::ptr::null(),
+        );
+        if child.is_null() {
+            return None;
+        }
+        let region = CreateRectRgn(0, 0, 0, 0);
+        if region.is_null() {
+            return None;
+        }
+        let kind = GetWindowRgn(child, region);
+        let mut bounds = RECT::default();
+        GetRgnBox(region, &mut bounds);
+        DeleteObject(region);
+        Some(
+            IsWindowVisible(child) != 0
+                && kind != NULLREGION
+                && bounds.right > bounds.left
+                && bounds.bottom > bounds.top,
+        )
+    }
+}
+
 impl ChildWindow {
     pub(crate) fn create(parent: isize, rect: tg_core::VideoRect) -> Result<Self, Error> {
         let class: Vec<u16> = "FerrogramVideo\0".encode_utf16().collect();

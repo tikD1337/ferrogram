@@ -27,6 +27,12 @@ impl std::fmt::Debug for Player {
     }
 }
 
+/// Whether the player's video window under the main window `parent` is visible with a
+/// non-empty clip region; `None` when no video window exists. For reference checks only.
+pub fn video_window_shown(parent: isize) -> Option<bool> {
+    crate::video_ffi::video_window_shown(parent)
+}
+
 impl Player {
     /// `report` runs on the player thread for every state change.
     pub fn start(report: impl Fn(VideoState) + Send + Sync + 'static) -> Result<Self, Error> {

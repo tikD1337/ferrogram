@@ -19,7 +19,7 @@ pub use console::{attach_parent_console, show_error};
 pub use hardening::{Hardening, harden_process};
 use std::sync::mpsc;
 use tg_core::{ChatId, Notification};
-pub use video::Player;
+pub use video::{Player, video_window_shown};
 #[derive(Debug, Clone, Copy)]
 pub struct Error(pub(crate) &'static str, pub(crate) u32);
 impl std::fmt::Display for Error {
