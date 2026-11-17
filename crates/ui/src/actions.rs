@@ -111,6 +111,7 @@ impl State {
         }
     }
     pub(super) fn cancel_action(&self, w: &AppWindow) {
+        self.clear_file_confirmation();
         w.set_action_dialog(0);
         self.actions.pending_edit.set(None);
         w.set_edit_saving(false);
@@ -132,6 +133,10 @@ impl State {
             .cloned()
     }
     pub(super) fn message_action(&self, w: &AppWindow, key: &str, action: i32) {
+        if action == 6 {
+            self.attachment_click(w, key, 2, 0.0);
+            return;
+        }
         let Ok(key) = key.parse::<i64>() else { return };
         let ids = self.feed.action_members(MessageId(key));
         let Some(chat) = self.feed.history.borrow().chat else {
@@ -404,6 +409,7 @@ impl State {
                 text,
                 entities,
                 photo,
+                attachment,
                 is_text,
             } => {
                 if let Some(m) = self
@@ -417,6 +423,7 @@ impl State {
                     m.text = text;
                     m.entities = entities;
                     m.photo = photo;
+                    m.attachment = attachment;
                     m.is_text = is_text;
                     m.permissions = None;
                 }

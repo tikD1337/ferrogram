@@ -302,12 +302,12 @@ fn newer_page_filters_anchor_and_uses_maximum_raw_id_for_cursor() {
 fn unsupported_content_is_a_visible_row() {
     let events = decode(
         &mut Decoder::default(),
-        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageSticker"}}}"#,
+        r#"{"@type":"updateNewMessage","message":{"id":104857600,"chat_id":7,"date":1,"is_outgoing":false,"content":{"@type":"messageAnimation"}}}"#,
     );
     let (Event::NewMessage(message) | Event::IncomingMessage(message)) = &events[0] else {
         panic!("placeholder row")
     };
-    assert_eq!(message.text, "Sticker");
+    assert_eq!(message.text, "Animation");
 }
 
 #[test]
@@ -581,4 +581,89 @@ fn media_without_caption_previews_its_label_not_an_empty_line() {
         chat.last_message.as_ref().map(|m| m.text.as_str()),
         Some("Photo")
     );
+}
+#[test]
+fn voice_documents_stickers_and_file_progress_use_bounded_domain_metadata() {
+    use base64::Engine as _;
+    use serde_json::json;
+    use tg_core::Attachment;
+    let file = json!({"id":42,"size":4096,"local":{"is_downloading_completed":false,"is_downloading_active":true,"downloaded_size":1024}});
+    let mut decoder = Decoder::default();
+    let mut m = json!({"id":20971520000_i64,"chat_id":7,"date":10,"is_outgoing":false,
+        "content":{"@type":"messageVoiceNote","is_listened":false,"caption":{"text":"Voice caption","entities":[]},
+            "voice_note":{"duration":12,"waveform":"IIhBivk=","mime_type":"audio/ogg","voice":file}}});
+    let events = decode(
+        &mut decoder,
+        &json!({"@type":"updateNewMessage","message":m}).to_string(),
+    );
+    let Event::IncomingMessage(message) = &events[0] else {
+        panic!("message")
+    };
+    let Some(Attachment::Voice(v)) = &message.attachment else {
+        panic!("voice")
+    };
+    assert_eq!(v.waveform, [0, 1, 2, 3, 4, 5, 6, 31]);
+    assert!(!v.listened);
+    assert_eq!(v.file.downloaded, 1024);
+    assert!(v.file.downloading);
+    assert_eq!(message.text, "Voice caption");
+    m["content"]["voice_note"]["waveform"] =
+        json!(base64::engine::general_purpose::STANDARD.encode([0u8; 257]));
+    assert!(
+        decoder
+            .decode(
+                &json!({"@type":"updateNewMessage","message":m}).to_string(),
+                |_| {}
+            )
+            .is_err()
+    );
+    m["content"] = json!({"@type":"messageDocument","document":{"file_name":"\u{754c}".repeat(200),"document":file},"caption":{"text":"Document caption","entities":[]}});
+    let events = decode(
+        &mut decoder,
+        &json!({"@type":"updateNewMessage","message":m}).to_string(),
+    );
+    let Event::IncomingMessage(message) = &events[0] else {
+        panic!("message")
+    };
+    let Some(Attachment::Document(d)) = &message.attachment else {
+        panic!("document")
+    };
+    assert!(d.name.len() <= 256 && d.name.len() % 3 == 0);
+    assert_eq!(message.text, "Document caption");
+    for format in ["stickerFormatWebp", "stickerFormatTgs", "stickerFormatWebm"] {
+        m["content"] = json!({"@type":"messageSticker","sticker":{"width":512,"height":256,"emoji":"\u{1f916}".repeat(100),"format":{"@type":format},"sticker":file}});
+        let events = decode(
+            &mut decoder,
+            &json!({"@type":"updateNewMessage","message":m}).to_string(),
+        );
+        let Event::IncomingMessage(message) = &events[0] else {
+            panic!("message")
+        };
+        let Some(Attachment::Sticker(s)) = &message.attachment else {
+            panic!("sticker")
+        };
+        assert!(s.emoji.len() <= 64);
+        assert_eq!(s.animated, format != "stickerFormatWebp");
+        assert_eq!(message.photo.is_some(), format == "stickerFormatWebp");
+        assert_eq!(message.text, "");
+    }
+    let events = decode(
+        &mut decoder,
+        r#"{"@type":"updateMessageContentOpened","chat_id":7,"message_id":20971520000}"#,
+    );
+    assert_eq!(
+        events,
+        [Event::MessageContentOpened {
+            chat: ChatId(7),
+            message: MessageId(20971520000)
+        }]
+    );
+}
+#[test]
+fn explicit_file_failure_is_retryable_and_does_not_expose_server_text() {
+    let events = decode(
+        &mut Decoder::default(),
+        r#"{"@type":"error","code":400,"message":"sensitive arbitrary text","@extra":{"command":"download","file":42}}"#,
+    );
+    assert_eq!(events, [Event::FileDownloadFailed(42)]);
 }

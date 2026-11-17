@@ -66,6 +66,7 @@ pub(crate) fn td_error(value: &Value) -> CommandError {
 
 pub(crate) fn command_kind(value: &Value) -> CommandKind {
     match value.as_str() {
+        Some("open_content") => CommandKind::OpenMessageContent,
         Some("download") => CommandKind::DownloadFile,
         Some("cancel_download") => CommandKind::CancelDownload,
         Some("qr") => CommandKind::RequestQrSignIn,
@@ -180,11 +181,36 @@ pub(crate) fn message(
         Some("messageVideo") => video(content)?,
         _ => (None, None),
     };
+    let attachment = attachment(content)?;
+    let photo = match attachment.as_ref() {
+        Some(tg_core::Attachment::Document(document)) => {
+            thumbnail(&content["document"], Some(document.file.id))?
+        }
+        Some(tg_core::Attachment::Sticker(sticker)) => {
+            let s = &content["sticker"];
+            if !sticker.animated {
+                Some(Photo {
+                    file: media_file(&s["sticker"])?,
+                    width: sticker.width,
+                    height: sticker.height,
+                    minithumbnail: vec![],
+                })
+            } else {
+                thumbnail(s, None)?
+            }
+        }
+        _ => photo,
+    };
     let placeholder = serde_json::json!({"text": content_label(content), "entities": []});
     let formatted = match content["@type"].as_str() {
         Some("messageText") => &content["text"],
-        Some("messagePhoto" | "messageVideo") if !content["caption"].is_null() => {
+        Some("messagePhoto" | "messageVideo" | "messageDocument" | "messageVoiceNote")
+            if !content["caption"].is_null() =>
+        {
             &content["caption"]
+        }
+        Some("messageSticker" | "messageVoiceNote" | "messageDocument") => {
+            &json!({"text":"","entities":[]})
         }
         _ => &placeholder,
     };
@@ -273,6 +299,7 @@ pub(crate) fn message(
         None
     };
     Ok(Some(Message {
+        attachment,
         reply,
         forwarded: (!value["forward_info"].is_null())
             .then(|| origin(&value["forward_info"]["origin"], users, chats).1),
@@ -447,6 +474,7 @@ impl Decoder {
                         text: m.text,
                         entities: m.entities,
                         photo: m.photo,
+                        attachment: m.attachment,
                         is_text: m.is_text,
                     });
                 }
@@ -470,6 +498,18 @@ impl Decoder {
                 }
             }
             Some("updateUser") => self.users.apply(&value["user"])?,
+            Some("error")
+                if extra["command"] == "download"
+                    && extra["file"]
+                        .as_i64()
+                        .is_some_and(|id| id > 0 && id <= i32::MAX as i64) =>
+            {
+                emit(Event::FileDownloadFailed(integer(&extra["file"])? as i32))
+            }
+            Some("updateMessageContentOpened") => emit(Event::MessageContentOpened {
+                chat: ChatId(integer(&value["chat_id"])?),
+                message: MessageId(integer(&value["message_id"])?),
+            }),
             Some("updateFile") => emit(Event::FileUpdated(media_file(&value["file"])?)),
             Some("file") if extra["command"] == "download" => {
                 emit(Event::FileUpdated(media_file(value)?))
@@ -602,7 +642,21 @@ pub(crate) fn media_file(value: &Value) -> Result<MediaFile, CommandError> {
     } else {
         None
     };
-    Ok(MediaFile { id, path })
+    Ok(MediaFile {
+        size: value["size"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .or_else(|| value["expected_size"].as_u64())
+            .unwrap_or(0)
+            .min(1 << 53),
+        downloaded: value["local"]["downloaded_size"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(1 << 53),
+        downloading: value["local"]["is_downloading_active"] == true,
+        id,
+        path,
+    })
 }
 fn mini(value: &Value) -> Result<Vec<u8>, CommandError> {
     if value.is_null() {
@@ -695,4 +749,110 @@ fn photo(value: &Value) -> Result<Option<Photo>, CommandError> {
         height: v["height"].as_u64().unwrap_or(1) as u16,
         minithumbnail: mini(&value["minithumbnail"])?,
     }))
+}
+
+fn attachment(content: &Value) -> Result<Option<tg_core::Attachment>, CommandError> {
+    use tg_core::{Attachment, Document, Sticker, Voice};
+    Ok(match content["@type"].as_str() {
+        Some("messageVoiceNote") => {
+            let v = &content["voice_note"];
+            let encoded = v["waveform"].as_str().unwrap_or("");
+            if encoded.len() > 344 {
+                return Err(malformed());
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|_| malformed())?;
+            Some(Attachment::Voice(Voice {
+                file: media_file(&v["voice"])?,
+                duration: v["duration"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
+                waveform: tg_core::decode_waveform(&bytes).map_err(|_| malformed())?,
+                listened: content["is_listened"] == true,
+            }))
+        }
+        Some("messageDocument") => Some(Attachment::Document(Document {
+            file: media_file(&content["document"]["document"])?,
+            name: bounded_label(
+                content["document"]["file_name"].as_str().unwrap_or("File"),
+                256,
+            ),
+        })),
+        Some("messageSticker") => {
+            let s = &content["sticker"];
+            Some(Attachment::Sticker(Sticker {
+                emoji: bounded_label(
+                    s["emoji"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("\u{1f5bc}"),
+                    64,
+                ),
+                width: s["width"].as_u64().unwrap_or(192).clamp(1, 2048) as u16,
+                height: s["height"].as_u64().unwrap_or(192).clamp(1, 2048) as u16,
+                animated: s["format"]["@type"] != "stickerFormatWebp",
+            }))
+        }
+        _ => None,
+    })
+}
+fn thumbnail(value: &Value, mini_id: Option<i32>) -> Result<Option<Photo>, CommandError> {
+    let t = &value["thumbnail"];
+    let mini = mini(&value["minithumbnail"])?;
+    if !t.is_null()
+        && matches!(
+            t["format"]["@type"].as_str(),
+            Some("thumbnailFormatJpeg" | "thumbnailFormatWebp")
+        )
+    {
+        Ok(Some(Photo {
+            file: media_file(&t["file"])?,
+            width: t["width"].as_u64().unwrap_or(48).clamp(1, 2048) as u16,
+            height: t["height"].as_u64().unwrap_or(48).clamp(1, 2048) as u16,
+            minithumbnail: mini,
+        }))
+    } else if let Some(id) = mini_id
+        && !mini.is_empty()
+    {
+        // A minithumbnail-only key must never start a download of the document itself.
+        Ok(Some(Photo {
+            file: MediaFile {
+                id: -id,
+                size: 0,
+                downloaded: 0,
+                downloading: false,
+                path: None,
+            },
+            width: 48,
+            height: 48,
+            minithumbnail: mini,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+/// Labels for non-text chat previews, separate from message captions and service contents.
+pub(crate) fn attachment_preview(content: &Value) -> Option<String> {
+    match content["@type"].as_str() {
+        Some("messageSticker") => Some(format!(
+            "Sticker {}",
+            bounded_label(content["sticker"]["emoji"].as_str().unwrap_or(""), 64)
+        )),
+        Some("messageVoiceNote") => Some("Voice message".into()),
+        Some("messageDocument") => Some(bounded_label(
+            content["document"]["file_name"].as_str().unwrap_or("File"),
+            256,
+        )),
+        _ => None,
+    }
+}
+fn bounded_label(value: &str, limit: usize) -> String {
+    let mut result = String::with_capacity(value.len().min(limit));
+    for c in value.chars() {
+        let c = if c == '\r' || c == '\n' { ' ' } else { c };
+        if result.len() + c.len_utf8() > limit {
+            break;
+        }
+        result.push(c);
+    }
+    result
 }

@@ -210,6 +210,7 @@ pub(crate) struct Feed {
     pub jump_unread: Cell<bool>,
     pub jump_target: Cell<Option<MessageId>>,
     pub highlight: Cell<Option<MessageId>>,
+    pub audio: Cell<Option<(MessageId, tg_core::VideoState)>>,
     // Only viewport rows own raster images, at most 64 rows and 96 MiB in total.
     visible: RefCell<Vec<Cached>>,
     pub media: RefCell<Option<Rc<RefCell<Media>>>>,
@@ -229,6 +230,7 @@ impl Feed {
             jump_unread: Cell::new(false),
             jump_target: Cell::new(None),
             highlight: Cell::new(None),
+            audio: Cell::new(None),
             notify: ModelNotify::default(),
         })
     }
@@ -418,14 +420,23 @@ impl Feed {
         let scale = self.scale.get().clamp(0.5, 4.0);
         let max_width = self.width.get().clamp(80.0, 504.0);
         let (first, last) = (&group[0], &group[group.len() - 1]);
-        let media = group.len() > 1 || first.photo.is_some() || first.video.is_some();
+        let sticker = matches!(first.attachment, Some(tg_core::Attachment::Sticker(_)));
+        let card = matches!(
+            first.attachment,
+            Some(tg_core::Attachment::Voice(_) | tg_core::Attachment::Document(_))
+        );
+        let card_height = if card { 64.0 } else { 0.0 };
+        let media =
+            !card && (sticker || group.len() > 1 || first.photo.is_some() || first.video.is_some());
         // An album shows one caption: the first photo caption that is not empty.
-        let caption = if media {
+        let caption = if sticker {
+            None
+        } else if media {
             group
                 .iter()
                 .find(|m| (m.photo.is_some() || m.video.is_some()) && !m.text.is_empty())
         } else {
-            Some(first)
+            (!card || !first.text.is_empty()).then_some(first)
         };
         let sizes: Vec<(f32, f32)> = if media {
             group
@@ -442,7 +453,14 @@ impl Feed {
         } else {
             Vec::new()
         };
-        let (frames, media_width, media_height) = album_layout(&sizes, max_width);
+        let (frames, media_width, media_height) =
+            if let Some(tg_core::Attachment::Sticker(s)) = &first.attachment {
+                let factor = 180.0_f32.min(max_width) / f32::from(s.width.max(s.height).max(1));
+                let (w, h) = (f32::from(s.width) * factor, f32::from(s.height) * factor);
+                (vec![[0.0, 0.0, w, h]], w, h)
+            } else {
+                album_layout(&sizes, max_width)
+            };
         let sender = if context.continued || first.outgoing {
             None
         } else {
@@ -466,7 +484,13 @@ impl Feed {
         let forward_height = if first.forwarded.is_some() { 22.0 } else { 0.0 };
         let quote_height = if first.reply.is_some() { 44.0 } else { 0.0 };
         let header_height = forward_height + quote_height;
-        let available = if media { media_width } else { max_width } - 2.0 * PAD;
+        let available = if card {
+            max_width.min(330.0)
+        } else if media {
+            media_width
+        } else {
+            max_width
+        } - 2.0 * PAD;
         let text = caption.map(|message| {
             self.engine
                 .borrow_mut()
@@ -486,7 +510,10 @@ impl Feed {
         } else {
             0.0
         };
-        let text_y = if media {
+        let attachment_y = PAD_TOP + sender_height + header_height;
+        let text_y = if card {
+            attachment_y + card_height + 6.0
+        } else if media {
             media_y + media_height + 6.0
         } else {
             PAD_TOP + sender_height + header_height
@@ -502,7 +529,9 @@ impl Feed {
         } else {
             (text_width.max(time_width), true)
         };
-        let mut bubble_width = if media {
+        let mut bubble_width = if card {
+            max_width.min(330.0)
+        } else if media {
             media_width
         } else {
             content_width + 2.0 * PAD
@@ -516,10 +545,12 @@ impl Feed {
         }
         let bubble_height = if text.is_some() {
             text_y + text_height + if footer { FOOTER } else { 0.0 } + PAD_BOTTOM
+        } else if card {
+            attachment_y + card_height + FOOTER + PAD_BOTTOM
         } else {
             media_y + media_height
         };
-        let over_media = text.is_none();
+        let over_media = text.is_none() && !card;
         let (time_x, time_y) = if over_media {
             (
                 bubble_width - time_width - 10.0,
@@ -534,11 +565,14 @@ impl Feed {
         let bubble_y = if context.date { DATE } else { 0.0 }
             + if context.unread { 32.0 } else { 0.0 }
             + if context.continued { GAP_RUN } else { GAP };
-        let cells: Vec<(MessageId, f32, f32)> = group
+        let mut cells: Vec<(MessageId, f32, f32)> = group
             .iter()
             .zip(&frames)
             .map(|(m, f)| (m.id, f[2], f[3]))
             .collect();
+        if card && first.photo.is_some() {
+            cells.push((first.id, 48.0, 48.0));
+        }
         let cell_rows: Vec<PhotoCell> = group
             .iter()
             .zip(&frames)
@@ -547,7 +581,11 @@ impl Feed {
                 label: if m.photo.is_some() || m.video.is_some() {
                     Default::default()
                 } else {
-                    m.text.as_str().into()
+                    if let Some(tg_core::Attachment::Sticker(s)) = &m.attachment {
+                        s.emoji.as_str().into()
+                    } else {
+                        m.text.as_str().into()
+                    }
                 },
                 x: f[0],
                 y: f[1],
@@ -574,7 +612,9 @@ impl Feed {
             time.insert_str(0, "clipped  ");
         }
         let permissions = first.permissions.unwrap_or_default();
-        let row = MessageRow {
+        let mut row = MessageRow {
+            attachment_y,
+            sticker,
             key: last.id.0.to_string().into(),
             can_edit: group.len() == 1 && first.outgoing && first.is_text && permissions.edit,
             can_reply: context.complete && permissions.reply,
@@ -641,7 +681,9 @@ impl Feed {
             time_y,
             time_over_media: over_media,
             checks,
+            ..Default::default()
         };
+        crate::attachments::decorate(&mut row, first, self.audio.get());
         (row, cells)
     }
     fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
@@ -745,6 +787,24 @@ impl Model for Feed {
         let visible = self.visible.borrow();
         let cached = visible.get(row)?;
         let mut row = cached.row.clone();
+        if let Some(message) = self
+            .history
+            .borrow()
+            .messages
+            .iter()
+            .find(|m| m.id == cached.context.members[0])
+        {
+            crate::attachments::decorate(&mut row, message, self.audio.get());
+            if matches!(message.attachment, Some(tg_core::Attachment::Document(_)))
+                && let Some(photo) = &message.photo
+                && let Some(media) = self.media.borrow().as_ref()
+            {
+                row.attachment_image =
+                    media
+                        .borrow_mut()
+                        .image(Key::new(photo, 48.0, 48.0, self.scale.get()));
+            }
+        }
         if let Some(media) = self.media.borrow().as_ref() {
             let cells: Vec<PhotoCell> = cached
                 .row
@@ -848,6 +908,7 @@ mod feed_tests {
     use tg_core::{Message, MessageId};
     fn message(n: i64) -> Message {
         Message {
+            attachment: None,
             reply: None,
             forwarded: None,
             edited: false,
@@ -856,6 +917,9 @@ mod feed_tests {
             video: None,
             photo: (n % 4 == 0).then(|| tg_core::Photo {
                 file: tg_core::MediaFile {
+                    size: 0,
+                    downloaded: 0,
+                    downloading: false,
                     id: n as i32,
                     path: None,
                 },
@@ -987,6 +1051,9 @@ mod feed_tests {
         m.album = album;
         m.photo = Some(tg_core::Photo {
             file: tg_core::MediaFile {
+                size: 0,
+                downloaded: 0,
+                downloading: false,
                 id: n as i32,
                 path: None,
             },
@@ -1122,6 +1189,7 @@ mod action_tests {
     use super::*;
     fn message(n: i64) -> Message {
         Message {
+            attachment: None,
             video: None,
             reply: None,
             forwarded: None,

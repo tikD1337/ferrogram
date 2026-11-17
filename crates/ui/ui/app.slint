@@ -20,9 +20,14 @@ export global Theme {
     out property <color> accent: #6ab3f3;
 }
 export struct ChatRow { avatar: image, initials: string, color: color, title: string, preview: string, time: string, unread: string, mentions: string, muted: bool, selected: bool }
+export struct WaveBar { amplitude: length, played: bool }
 export struct PhotoCell { image: image, label: string, x: length, y: length, width: length, height: length, video: bool, duration: string }
 // One feed row: a date separator (optional) and one bubble holding a message or an album.
 export struct MessageRow {
+    voice: bool, voice-playing: bool, voice-unlistened: bool, voice-time: string, waveform: [WaveBar],
+    document: bool, file-name: string, file-size: string, file-progress: string,
+    file-available: bool, file-downloading: bool, attachment-image: image, attachment-y: length,
+    sticker: bool,
     key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
     highlighted: bool, forwarded: string, sender-y: length,
     has-quote: bool, quote-y: length, quote-sender: string, quote-preview: string, quote-color: color,
@@ -162,6 +167,9 @@ export component AppWindow inherits Window {
     callback open-chat(index: int);
     // Opens the video of a feed cell in the separate media viewer window.
     callback open-video(row: int, cell: int);
+    callback attachment-action(key: string, action: int, fraction: float);
+    callback confirm-file();
+    in property <string> file-name;
 
     callback load-chats();
     callback send();
@@ -182,12 +190,14 @@ export component AppWindow inherits Window {
     in-out property <bool> menu-can-edit;
     in-out property <bool> menu-can-forward;
     in-out property <bool> menu-can-delete;
-    function open-menu(key: string, reply: bool, edit: bool, forward: bool, delete: bool, x: length, y: length) {
+    in-out property <bool> menu-can-reveal;
+    function open-menu(key: string, reply: bool, edit: bool, forward: bool, delete: bool, reveal: bool, x: length, y: length) {
         root.menu-key = key;
         root.menu-can-reply = reply;
         root.menu-can-edit = edit;
         root.menu-can-forward = forward;
         root.menu-can-delete = delete;
+        root.menu-can-reveal = reveal;
         root.menu-x = x;
         root.menu-y = y;
         root.menu-open = true;
@@ -363,7 +373,7 @@ export component AppWindow inherits Window {
                                 Rectangle {
                                     x: msg.outgoing ? parent.width - msg.bubble-width - 14px : 14px;
                                     y: msg.bubble-y; width: msg.bubble-width; height: msg.bubble-height;
-                                    background: msg.highlighted ? #386080 : msg.outgoing ? Theme.outgoing : Theme.incoming;
+                                    background: msg.highlighted ? #386080 : msg.sticker ? transparent : msg.outgoing ? Theme.outgoing : Theme.incoming;
                                     border-top-left-radius: 12px; border-top-right-radius: 12px;
                                     border-bottom-left-radius: !msg.outgoing && msg.tail ? 4px : 12px;
                                     border-bottom-right-radius: msg.outgoing && msg.tail ? 4px : 12px;
@@ -371,7 +381,7 @@ export component AppWindow inherits Window {
                                         enabled: !root.blocked && root.action-dialog == 0;
                                         pointer-event(event) => {
                                             if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
-                                                root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete,
+                                                root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete, msg.file-available,
                                                     self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                                             }
                                         }
@@ -392,6 +402,47 @@ export component AppWindow inherits Window {
                                         x: 10px; y: msg.sender-y; width: parent.width - 20px; height: 18px;
                                         text: msg.sender; color: msg.sender-color; font-size: 13px; font-weight: 600; overflow: elide;
                                     }
+                                    if msg.voice || msg.document: Rectangle {
+                                        x: 10px; y: msg.attachment-y; height: 64px; width: parent.width - 20px;
+                                        Rectangle {
+                                            x: 0px; y: 7px; width: 44px; height: 44px; border-radius: 22px; background: Theme.badge;
+                                            if msg.file-progress == "" && msg.voice: Path {
+                                                x: 15px; y: 13px; width: 16px; height: 18px; viewbox-width: 16; viewbox-height: 18;
+                                                fill: #ffffff; commands: msg.voice-playing ? "M1 1 H6 V17 H1 Z M10 1 H15 V17 H10 Z" : "M2 1 L15 9 L2 17 Z";
+                                            }
+                                            if msg.file-progress == "" && msg.document: Path {
+                                                x: 12px; y: 10px; width: 20px; height: 24px; viewbox-width: 20; viewbox-height: 24;
+                                                stroke: #ffffff; stroke-width: 1.5px; fill: transparent;
+                                                commands: msg.file-available ? "M3 1 H12 L18 7 V23 H3 Z M12 1 V7 H18 M6 13 H15 M6 17 H13" : "M10 2 V17 M4 11 L10 17 L16 11 M3 21 H17";
+                                            }
+                                            if msg.document: Image { width: 44px; height: 44px; source: msg.attachment-image; image-fit: cover; }
+                                            if msg.file-progress != "": Text { text: msg.file-progress; color: #ffffff; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                        }
+                                        if msg.voice: Rectangle {
+                                            x: 56px; y: 12px; width: parent.width - 56px; height: 28px;
+                                            for bar[index] in msg.waveform: Rectangle {
+                                                x: index * parent.width / 48; width: max(1px, parent.width / 48 - 2px);
+                                                height: bar.amplitude; y: (parent.height - self.height) / 2;
+                                                border-radius: 1px; background: bar.played ? Theme.accent : Theme.muted;
+                                            }
+                                            TouchArea { clicked => { root.attachment-action(msg.key, 1, self.mouse-x / self.width); } }
+                                        }
+                                        if msg.voice: Text { x: 56px; y: 43px; width: parent.width - 70px; height: 18px; text: msg.voice-time; color: Theme.muted; font-size: 12px; }
+                                        if msg.voice && msg.voice-unlistened: Rectangle { x: parent.width - 7px; y: 48px; width: 5px; height: 5px; border-radius: 3px; background: Theme.accent; }
+                                        if msg.document: Text { x: 56px; y: 9px; width: parent.width - 62px; height: 22px; text: msg.file-name; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
+                                        if msg.document: Text { x: 56px; y: 34px; width: parent.width - 62px; height: 20px; text: msg.file-size + (msg.file-downloading ? " / downloading" : msg.file-available ? " / Open file" : " / Download"); color: Theme.muted; font-size: 12px; overflow: elide; }
+                                        TouchArea {
+                                            width: msg.voice ? 48px : parent.width; height: parent.height;
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.attachment-action(msg.key, 0, 0); }
+                                            pointer-event(event) => {
+                                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                                                    root.open-menu(msg.key,msg.can-reply,msg.can-edit,msg.can-forward,msg.can-delete,msg.file-available,
+                                                        self.absolute-position.x+self.mouse-x,self.absolute-position.y+self.mouse-y);
+                                                }
+                                            }
+                                        }
+                                    }
                                     if msg.media-height > 0px: Rectangle {
                                         x: 0px; y: msg.media-y; width: msg.media-width; height: msg.media-height; clip: true;
                                         border-top-left-radius: msg.media-y == 0px ? 12px : 0px;
@@ -399,8 +450,8 @@ export component AppWindow inherits Window {
                                         border-bottom-left-radius: msg.media-caption ? 0px : !msg.outgoing && msg.tail ? 4px : 12px;
                                         border-bottom-right-radius: msg.media-caption ? 0px : msg.outgoing && msg.tail ? 4px : 12px;
                                         for cell[index] in msg.cells: Rectangle {
-                                            x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: Theme.field;
-                                            Text { text: cell.label; color: Theme.muted; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                                            x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: msg.sticker ? transparent : Theme.field;
+                                            Text { text: cell.label; color: Theme.muted; font-size: msg.sticker ? 80px : 13px; horizontal-alignment: center; vertical-alignment: center; }
                                             Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; }
                                             if cell.video: Rectangle {
                                                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -415,7 +466,7 @@ export component AppWindow inherits Window {
                                                 enabled: !root.blocked;
                                                 pointer-event(event) => {
                                                     if event.button == PointerEventButton.right && event.kind == PointerEventKind.up && root.action-dialog == 0 {
-                                                        root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete,
+                                                        root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete, msg.file-available,
                                                             self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                                                     }
                                                 }
@@ -515,12 +566,14 @@ export component AppWindow inherits Window {
             key-pressed(event) => { if event.text == Key.Escape { root.cancel-action(); return accept; } return reject; }
         }
         Rectangle {
-            width: 420px; height: root.action-dialog == 1 ? 220px : 440px;
+            width: 420px; height: root.action-dialog == 1 ? 220px : root.action-dialog == 3 ? 260px : 440px;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             border-radius: 10px; background: Theme.panel;
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Text { text: root.action-dialog == 1 ? "Delete message?" : "Forward to"; color: Theme.text; font-size: 19px; font-weight: 600; }
+                Text { text: root.action-dialog == 1 ? "Delete message?" : root.action-dialog == 3 ? "Open this file?" : "Forward to"; color: Theme.text; font-size: 19px; font-weight: 600; }
+                if root.action-dialog == 3: Text { text: "This file can run code on your computer. Open it only if you trust its source."; color: Theme.text; font-size: 14px; wrap: word-wrap; }
+                if root.action-dialog == 3: Text { text: root.file-name; color: Theme.muted; font-size: 14px; overflow: elide; }
                 if root.action-dialog == 1: Text { text: "Delete the selected message or entire album?"; color: Theme.muted; font-size: 14px; wrap: word-wrap; }
                 if root.action-dialog == 1 && root.can-revoke: Rectangle {
                     height: 38px;
@@ -542,6 +595,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout { alignment: end; spacing: 12px;
                     Link { text: "Cancel"; width: 100px; clicked => { root.cancel-action(); } }
+                    if root.action-dialog == 3: Action { text: "Open"; width: 100px; clicked => { root.confirm-file(); } }
                     if root.action-dialog == 1: Action { text: "Delete"; width: 100px; clicked => { root.confirm-delete(); } }
                 }
             }
@@ -587,6 +641,10 @@ export component AppWindow inherits Window {
                 MenuRow {
                     text: "Forward"; enabled: root.menu-can-forward; clicked => { root.menu-pick(3); }
                     icon: "M14 8 L20 13 L14 18 M20 13 H10 C6.1 13 3 16.1 3 20";
+                }
+                if root.menu-can-reveal: MenuRow {
+                    text: "Show in folder"; clicked => { root.menu-pick(6); }
+                    icon: "M3 7 H10 L12 10 H21 V21 H3 Z M3 7 V4 H9 L12 7";
                 }
                 MenuRow {
                     text: "Delete"; enabled: root.menu-can-delete; clicked => { root.menu-pick(4); }

@@ -68,6 +68,7 @@ fn chat() -> tg_core::Chat {
 }
 fn message() -> tg_core::Message {
     tg_core::Message {
+        attachment: None,
         reply: None,
         forwarded: None,
         edited: false,

@@ -38,6 +38,10 @@ pub(crate) enum Message {
         width: i32,
         height: i32,
     },
+    OpenAudio {
+        path: std::path::PathBuf,
+        token: u64,
+    },
     Resize {
         width: i32,
         height: i32,
@@ -64,6 +68,7 @@ impl IMFMediaEngineNotify_Impl for Notify_Impl {
 }
 
 struct Engine {
+    audio_token: Option<u64>,
     engine: IMFMediaEngine,
     extended: Option<IMFMediaEngineEx>,
 }
@@ -73,9 +78,10 @@ impl Engine {
         notify: &IMFMediaEngineNotify,
         path: &Path,
         window: isize,
+        audio_token: Option<u64>,
     ) -> windows::core::Result<Self> {
         // SAFETY: COM calls on this thread, which initialized COM (MTA) and Media Foundation.
-        // `window` is a live child window owned by the UI thread until Close is acknowledged.
+        // `window` is a live owned child until Close is acknowledged, or zero for audio-only mode.
         unsafe {
             let factory: IMFMediaEngineClassFactory =
                 CoCreateInstance(&CLSID_MFMediaEngineClassFactory, None, CLSCTX_INPROC_SERVER)?;
@@ -83,12 +89,27 @@ impl Engine {
             MFCreateAttributes(&mut attributes, 2)?;
             let attributes = attributes.ok_or_else(windows::core::Error::empty)?;
             attributes.SetUnknown(&MF_MEDIA_ENGINE_CALLBACK, notify)?;
-            attributes.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, window as u64)?;
-            let engine = factory.CreateInstance(0, &attributes)?;
+            if window != 0 {
+                attributes.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, window as u64)?;
+            }
+            let flags = if window == 0 {
+                windows::Win32::Media::MediaFoundation::MF_MEDIA_ENGINE_AUDIOONLY.0 as u32
+            } else {
+                0
+            };
+            let engine = factory.CreateInstance(flags, &attributes)?;
             engine.SetSource(&BSTR::from(path.as_os_str().to_string_lossy().as_ref()))?;
             engine.Play()?;
-            let extended = engine.cast::<IMFMediaEngineEx>().ok();
-            Ok(Self { engine, extended })
+            let extended = if window != 0 {
+                engine.cast::<IMFMediaEngineEx>().ok()
+            } else {
+                None
+            };
+            Ok(Self {
+                engine,
+                extended,
+                audio_token,
+            })
         }
     }
 
@@ -129,6 +150,7 @@ impl Engine {
             }
         };
         tg_core::VideoState {
+            audio_token: self.audio_token,
             position_ms: ms(position),
             duration_ms: ms(duration),
             playing: !paused && !ended,
@@ -204,12 +226,23 @@ pub(crate) fn run(
             } => {
                 engine = None;
                 size = (width, height);
-                match Engine::open(&notify, &path, window) {
+                match Engine::open(&notify, &path, window, None) {
                     Ok(opened) => {
                         opened.resize(width, height);
                         engine = Some(opened);
                     }
                     Err(_) => report(tg_core::VideoState {
+                        failed: true,
+                        ..Default::default()
+                    }),
+                }
+            }
+            Message::OpenAudio { path, token } => {
+                engine = None;
+                match Engine::open(&notify, &path, 0, Some(token)) {
+                    Ok(opened) => engine = Some(opened),
+                    Err(_) => report(tg_core::VideoState {
+                        audio_token: Some(token),
                         failed: true,
                         ..Default::default()
                     }),

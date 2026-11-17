@@ -1,7 +1,7 @@
 //! Synthetic local backend. No TDLib, credentials, data-directory or key access.
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 use tg_core::{
@@ -22,6 +22,7 @@ pub(crate) struct Demo {
     chats: Arc<std::sync::Mutex<Vec<Chat>>>,
     // At most two delayed page workers, one per direction; no retained full history.
     pending: Arc<AtomicUsize>,
+    downloads: Arc<std::sync::Mutex<std::collections::BTreeMap<i32, Arc<AtomicBool>>>>,
 }
 impl Demo {
     pub fn new(media_path: std::path::PathBuf, text_only: bool) -> Self {
@@ -33,6 +34,7 @@ impl Demo {
             changes: Arc::default(),
             chats: Arc::default(),
             pending: Arc::default(),
+            downloads: Arc::default(),
         }
     }
     pub fn seed(&mut self) {
@@ -47,6 +49,7 @@ impl Demo {
             ("Saved Messages", "cargo build --release -p tg-app", 0),
             ("Design review", "Albums now show as one bubble", 3),
             ("Weekend trip", "Photo", 12),
+            ("Sticker gallery", "Sticker", 0),
         ];
         for (position, (title, text, unread)) in chats.into_iter().enumerate() {
             let id = position as i64 + 1;
@@ -89,6 +92,16 @@ impl Demo {
             return Ok(());
         };
         match command {
+            Command::OpenMessageContent { chat, message } => {
+                if let Some(mut m) = self.lookup(chat, message)
+                    && let Some(tg_core::Attachment::Voice(v)) = &mut m.attachment
+                {
+                    v.listened = true;
+                    self.remember(m)?;
+                }
+                sink.post(Event::MessageContentOpened { chat, message });
+            }
+            Command::DownloadFileUrgent(id) => self.download(id)?,
             Command::GetMessageProperties { chat, message } => {
                 let m = self.lookup(chat, message);
                 sink.post(Event::MessageProperties {
@@ -140,6 +153,7 @@ impl Demo {
                     text: m.text,
                     entities: vec![],
                     photo: None,
+                    attachment: None,
                     is_text: true,
                 });
                 sink.post(Event::MessageEdited {
@@ -202,19 +216,30 @@ impl Demo {
                 }
             }
             Command::DownloadFile(id) => {
-                // A bounded file notification uses the same domain path as updateFile.
-                // Video files have their own ID range and come from the demo clip.
-                let path = if id >= VIDEO_FILE_ID {
-                    self.media_path.with_extension("mp4")
-                } else {
-                    self.media_path.clone()
-                };
+                let (path, size) = demo_file(&self.media_path, id);
                 sink.post(Event::FileUpdated(tg_core::MediaFile {
                     id,
                     path: Some(path),
+                    size,
+                    downloaded: size,
+                    downloading: false,
                 }));
             }
-            Command::CancelDownload(_) => {}
+            Command::CancelDownload(id) => {
+                if let Ok(mut downloads) = self.downloads.lock()
+                    && let Some(cancelled) = downloads.remove(&id)
+                {
+                    cancelled.store(true, Ordering::Release);
+                }
+                let (_, size) = demo_file(&self.media_path, id);
+                sink.post(Event::FileUpdated(tg_core::MediaFile {
+                    id,
+                    path: None,
+                    size,
+                    downloaded: 0,
+                    downloading: false,
+                }));
+            }
             Command::ViewMessages { chat, messages } => {
                 let valid = !messages.is_empty()
                     && messages.len() <= 50
@@ -293,6 +318,50 @@ impl Demo {
         }
         Ok(())
     }
+    fn download(&self, id: i32) -> Result<(), tg_core::CommandError> {
+        let Some(sink) = self.sink.clone() else {
+            return Ok(());
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut downloads = self.downloads.lock().map_err(|_| action_error())?;
+            if downloads.contains_key(&id) {
+                return Ok(());
+            }
+            if downloads.len() >= 8 {
+                return Err(action_error());
+            }
+            downloads.insert(id, cancelled.clone());
+        }
+        let (path, size) = demo_file(&self.media_path, id);
+        sink.post(Event::FileUpdated(tg_core::MediaFile {
+            id,
+            path: None,
+            size,
+            downloaded: size / 2,
+            downloading: true,
+        }));
+        let downloads = self.downloads.clone();
+        std::thread::Builder::new()
+            .name("tg-demo-download".into())
+            .spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                if !cancelled.load(Ordering::Acquire) {
+                    sink.post(Event::FileUpdated(tg_core::MediaFile {
+                        id,
+                        path: Some(path),
+                        size,
+                        downloaded: size,
+                        downloading: false,
+                    }));
+                }
+                if let Ok(mut downloads) = downloads.lock() {
+                    downloads.remove(&id);
+                }
+            })
+            .map_err(|_| action_error())?;
+        Ok(())
+    }
     fn lookup(&self, chat: ChatId, id: MessageId) -> Option<Message> {
         if let Ok(changes) = self.changes.lock()
             && let Some(m) = changes.entries.get(&(chat, id))
@@ -320,6 +389,7 @@ impl Demo {
             .spawn(move || {
                 std::thread::sleep(Duration::from_secs(3));
                 let message = Message {
+                    attachment: None,
                     reply: None,
                     forwarded: None,
                     edited: false,
@@ -404,12 +474,20 @@ impl Demo {
 }
 fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> Event {
     let mut event = page(chat, before, newer);
-    if !text_only
+    if (!text_only || chat.0 == 5)
         && let Event::MessagesLoaded { messages, .. } | Event::NewerMessagesLoaded { messages, .. } =
             &mut event
     {
         for message in messages {
             let n = message.id.0 / 1048576;
+            if chat.0 == 5 {
+                demo_attachment(message, 9);
+                continue;
+            }
+            if matches!(n % 20, 4 | 8 | 9 | 14 | 17 | 18) {
+                demo_attachment(message, n % 20);
+                continue;
+            }
             match n % 20 {
                 0 => {
                     message.is_text = false;
@@ -419,6 +497,9 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                     message.photo = Some(preview);
                     message.video = Some(tg_core::Video {
                         file: tg_core::MediaFile {
+                            size: 0,
+                            downloaded: 0,
+                            downloading: false,
                             id: VIDEO_FILE_ID + n as i32,
                             path: None,
                         },
@@ -470,7 +551,13 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
 }
 fn demo_photo(id: i32) -> tg_core::Photo {
     tg_core::Photo {
-        file: tg_core::MediaFile { id, path: None },
+        file: tg_core::MediaFile {
+            size: 0,
+            downloaded: 0,
+            downloading: false,
+            id,
+            path: None,
+        },
         width: 1008,
         height: 640,
         minithumbnail: include_bytes!("../assets/demo-mini.jpg").to_vec(),
@@ -487,7 +574,28 @@ pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
         path.with_extension("mp4"),
         include_bytes!("../assets/demo-video.mp4"),
     )?;
+    for (extension, bytes) in [
+        (
+            "webp",
+            include_bytes!("../assets/demo-sticker.webp").as_slice(),
+        ),
+        ("ogg", include_bytes!("../assets/demo-voice.ogg").as_slice()),
+        ("txt", include_bytes!("../assets/demo-file.txt").as_slice()),
+        ("pdf", include_bytes!("../assets/demo-file.pdf").as_slice()),
+        (
+            "ps1",
+            include_bytes!("../assets/demo-script.ps1").as_slice(),
+        ),
+    ] {
+        std::fs::write(path.with_extension(extension), bytes)?;
+    }
     Ok(path)
+}
+pub(crate) fn cleanup_media(path: &std::path::Path) -> std::io::Result<()> {
+    for ext in ["mp4", "webp", "ogg", "txt", "pdf", "ps1"] {
+        let _ = std::fs::remove_file(path.with_extension(ext));
+    }
+    std::fs::remove_file(path)
 }
 fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
     let sequence = before.0 / 1048576;
@@ -516,7 +624,7 @@ fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
         for entity in &mut entities { entity.offset+=prefix.len() as u32; }
         let outgoing = id % 3 == 0;
         let sender_id = if outgoing { 0 } else { 1000 + (id / 4) % 3 };
-        Message { video: None, reply: (id%6==4).then(||tg_core::Reply {resolved:true,chat,message:MessageId((id-3).max(1)*1048576),sender_id:1000,sender:"Anna Petrova".into(),preview:"Earlier synthetic message".into()}), forwarded: (id%9==0).then(||"Design review".into()), edited: outgoing && id%15==0, is_text: true, permissions: None, album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
+        Message { attachment: None, video: None, reply: (id%6==4).then(||tg_core::Reply {resolved:true,chat,message:MessageId((id-3).max(1)*1048576),sender_id:1000,sender:"Anna Petrova".into(),preview:"Earlier synthetic message".into()}), forwarded: (id%9==0).then(||"Design review".into()), edited: outgoing && id%15==0, is_text: true, permissions: None, album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent }
     }).collect();
     if newer {
         Event::NewerMessagesLoaded {
@@ -702,6 +810,7 @@ fn synthetic(chat: ChatId, id: MessageId, text_only: bool) -> Option<Message> {
 }
 fn local_message(chat: ChatId, sequence: i64, text: String) -> Message {
     Message {
+        attachment: None,
         video: None,
         reply: None,
         forwarded: None,
@@ -748,4 +857,85 @@ mod action_tests {
         );
         assert!(!messages.iter().any(|m| m.id == MessageId(19999 * 1048576)));
     }
+}
+
+fn demo_attachment(m: &mut Message, kind: i64) {
+    use tg_core::{Attachment, Document, MediaFile, Photo, Sticker, Voice};
+    let n = m.id.0 / 1048576;
+    m.is_text = false;
+    m.album = 0;
+    m.photo = None;
+    m.video = None;
+    m.text.clear();
+    m.entities.clear();
+    let file = |base| MediaFile {
+        id: base + n as i32,
+        path: None,
+        size: 0,
+        downloaded: 0,
+        downloading: false,
+    };
+    m.attachment = Some(match kind {
+        4 => {
+            let mut f = file(2_000_000);
+            f.size = include_bytes!("../assets/demo-voice.ogg").len() as u64;
+            Attachment::Voice(Voice {
+                file: f,
+                duration: 12,
+                waveform: (0..64).map(|n| ((n * 13 + 7) % 32) as u8).collect(),
+                listened: n % 40 == 4,
+            })
+        }
+        8 | 17 | 18 => {
+            let name = match kind {
+                17 => "demo-script.ps1",
+                18 => "demo-file.pdf",
+                _ => "demo-file.txt",
+            };
+            let mut f = file(3_000_000);
+            let (_, size) = demo_file(std::path::Path::new("unused.jpg"), f.id);
+            f.size = size;
+            if kind == 8 {
+                m.text = "A locally generated document with a caption.".into();
+            }
+            Attachment::Document(Document {
+                file: f,
+                name: name.into(),
+            })
+        }
+        _ => {
+            if kind != 14 {
+                m.photo = Some(Photo {
+                    file: file(4_000_000),
+                    width: 192,
+                    height: 192,
+                    minithumbnail: vec![],
+                });
+            }
+            Attachment::Sticker(Sticker {
+                emoji: "\u{1f916}".into(),
+                width: 192,
+                height: 192,
+                animated: kind == 14,
+            })
+        }
+    });
+}
+fn demo_file(base: &std::path::Path, id: i32) -> (std::path::PathBuf, u64) {
+    let (extension, size) = if id >= 4_000_000 {
+        ("webp", include_bytes!("../assets/demo-sticker.webp").len())
+    } else if id >= 3_000_000 {
+        match (id - 3_000_000) % 20 {
+            17 => ("ps1", include_bytes!("../assets/demo-script.ps1").len()),
+            18 => ("pdf", include_bytes!("../assets/demo-file.pdf").len()),
+            _ => ("txt", include_bytes!("../assets/demo-file.txt").len()),
+        }
+    } else if id >= 2_000_000 {
+        ("ogg", include_bytes!("../assets/demo-voice.ogg").len())
+    } else if id >= VIDEO_FILE_ID {
+        ("mp4", include_bytes!("../assets/demo-video.mp4").len())
+    } else {
+        ("jpg", include_bytes!("../assets/demo-photo.jpg").len())
+    };
+    (base.with_extension(extension), size as u64)
 }

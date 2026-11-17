@@ -94,6 +94,7 @@ pub struct MessagePermissions {
 /// Engine output is bounded to 64 KiB text and 1,024 entities per message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
+    pub attachment: Option<crate::Attachment>,
     pub reply: Option<Reply>,
     /// Forward origin display name, at most 256 UTF-8 bytes.
     pub forwarded: Option<String>,
@@ -177,6 +178,13 @@ pub enum Event {
     /// Playback state of the open video, sent on player events.
     VideoState(crate::VideoState),
     FileUpdated(MediaFile),
+    MessageContentOpened {
+        chat: ChatId,
+        message: MessageId,
+    },
+    FileOperationFailed,
+    FileDownloadFailed(i32),
+
     ChatListChanged(ChatListChange),
     /// False means TDLib reported that the main list is exhausted.
     ChatsLoaded {
@@ -229,6 +237,7 @@ pub enum Event {
         text: String,
         entities: Vec<TextEntity>,
         photo: Option<Photo>,
+        attachment: Option<crate::Attachment>,
         is_text: bool,
     },
     MessageEdited {
@@ -262,6 +271,9 @@ pub struct Photo {
 /// TDLib-managed local file; paths are at most 4 KiB and are never logged.
 #[derive(Clone, PartialEq, Eq)]
 pub struct MediaFile {
+    pub size: u64,
+    pub downloaded: u64,
+    pub downloading: bool,
     pub id: i32,
     pub path: Option<std::path::PathBuf>,
 }

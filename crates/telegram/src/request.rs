@@ -8,6 +8,22 @@ use crate::mapping::{MAX_LINK_BYTES, MAX_TEXT_BYTES, PAGE_SIZE, error};
 
 pub(crate) fn encode(command: Command) -> Result<Value, CommandError> {
     let (mut request, tag) = match command {
+        Command::OpenMessageContent { chat, message } => {
+            valid_id(message)?;
+            (
+                json!({"@type":"openMessageContent","chat_id":chat.0,"message_id":message.0}),
+                "open_content",
+            )
+        }
+        Command::DownloadFileUrgent(id) => {
+            if id <= 0 {
+                return Err(error(-2, "Invalid media file ID."));
+            }
+            return Ok(
+                json!({"@type":"downloadFile","file_id":id,"priority":32,"offset":0,"limit":0,"synchronous":false,
+                "@extra":{"command":"download","file":id}}),
+            );
+        }
         Command::ReplyText { chat, reply, text } => {
             valid_id(reply)?;
             check_input(&text, MAX_TEXT_BYTES)?;
@@ -397,5 +413,24 @@ mod action_tests {
             })
             .is_err()
         );
+    }
+}
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    #[test]
+    fn explicit_download_is_higher_priority_and_content_open_uses_real_id() {
+        let urgent = encode(Command::DownloadFileUrgent(42)).unwrap();
+        let photo = encode(Command::DownloadFile(42)).unwrap();
+        assert!(urgent["priority"].as_u64().unwrap() > photo["priority"].as_u64().unwrap());
+        assert_eq!(urgent["synchronous"], false);
+        let opened = encode(Command::OpenMessageContent {
+            chat: ChatId(7),
+            message: MessageId(20971520000),
+        })
+        .unwrap();
+        assert_eq!(opened["@type"], "openMessageContent");
+        assert_eq!(opened["message_id"], 20971520000_i64);
+        assert!(encode(Command::DownloadFileUrgent(-1)).is_err());
     }
 }

@@ -432,6 +432,7 @@ mod tests {
     fn multilingual_images_are_bounded_and_use_cached_glyphs() {
         let mut engine = TextEngine::new(None);
         let mut message = Message {
+            attachment: None,
             reply: None,
             forwarded: None,
             edited: false,

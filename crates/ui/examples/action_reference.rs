@@ -10,6 +10,7 @@ mod demo_backend;
 
 fn fixture(n: i64) -> tg_core::Message {
     tg_core::Message {
+        attachment: None,
         video: None,
         id: MessageId(n * 1048576),
         chat: tg_core::ChatId(7),

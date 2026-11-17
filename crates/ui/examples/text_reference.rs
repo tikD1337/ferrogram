@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         let message = Message {
+            attachment: None,
             reply: None,
             forwarded: None,
             edited: false,

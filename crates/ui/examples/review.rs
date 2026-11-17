@@ -25,7 +25,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })),
         "media-loading" | "media-missing" => {
             let photo = tg_core::Photo {
-                file: tg_core::MediaFile { id: 42, path: None },
+                file: tg_core::MediaFile {
+                    size: 0,
+                    downloaded: 0,
+                    downloading: false,
+                    id: 42,
+                    path: None,
+                },
                 width: 1008,
                 height: 640,
                 minithumbnail: if screen == "media-loading" {
@@ -55,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 before: tg_core::MessageId(0),
                 next_before: None,
                 messages: vec![tg_core::Message {
+                    attachment: None,
                     reply: None,
                     forwarded: None,
                     edited: false,
