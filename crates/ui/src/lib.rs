@@ -2,6 +2,7 @@
 mod actions;
 mod attachments;
 mod bridge;
+mod check;
 mod clock;
 mod history;
 mod media;
@@ -46,12 +47,15 @@ pub struct Options {
     pub demo_voice: Option<u32>,
     pub demo_round: Option<u32>,
     pub demo_stickers: bool,
+    /// Write a JSON account of the run here at exit (smoke tests). See `check.rs`.
+    pub check: Option<PathBuf>,
     /// Loaded off-thread by tg-app. At most 32 MiB, never bundled.
     pub emoji_font: Option<Vec<u8>>,
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
 type VideoFn = Box<dyn Fn(VideoRequest) -> Result<(), CommandError>>;
 struct State {
+    check: check::Check,
     attachments: attachments::Attachments,
     actions: actions::Actions,
     media: Rc<RefCell<media::Media>>,
@@ -482,6 +486,9 @@ impl State {
         window.set_draft("".into());
     }
     fn event(&self, window: &AppWindow, event: Event) {
+        if let Event::VideoState(state) = &event {
+            self.check.record(state);
+        }
         match event {
             event @ (Event::MessageProperties { .. }
             | Event::MessageContentChanged { .. }
@@ -834,6 +841,7 @@ pub struct Ui {
     window: AppWindow,
     sink: EventSink,
     snapshot: Option<PathBuf>,
+    check: Option<PathBuf>,
     demo_scroll: Option<u32>,
     demo_video: Option<u32>,
     demo_voice: Option<u32>,
@@ -868,6 +876,7 @@ impl Ui {
         *chats.media.borrow_mut() = Some(media.clone());
         *feed.media.borrow_mut() = Some(media.clone());
         let state = Rc::new(State {
+            check: Default::default(),
             attachments: Default::default(),
             actions: actions::Actions::new(chats.clone()),
             media,
@@ -1143,6 +1152,7 @@ impl Ui {
             window,
             sink,
             snapshot: options.snapshot,
+            check: options.check,
             demo_scroll: options.demo_scroll,
             demo_video: options.demo_video,
             demo_voice: options.demo_voice,
@@ -1311,6 +1321,22 @@ impl Ui {
         let ran = self.window.run();
         // Release producers that may wait for a drain that will never come again.
         self.sink.close();
+        if let Some(path) = &self.check {
+            let window = &self.window;
+            self.state
+                .check
+                .write(
+                    path,
+                    &check::Screen {
+                        ready: window.get_ready(),
+                        auth_step: window.get_auth_step(),
+                        chats: self.state.chats.rows.borrow().len(),
+                        messages: self.state.feed.history.borrow().messages.len(),
+                        error: &window.get_error(),
+                    },
+                )
+                .map_err(|_| "Could not write the check report")?;
+        }
         ran?;
         if let Some(saved) = result.borrow_mut().take() {
             saved?.join().map_err(|_| "Snapshot worker failed")??;

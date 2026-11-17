@@ -11,6 +11,8 @@ pub(crate) struct Options {
     pub demo_voice: Option<u32>,
     pub demo_round: Option<u32>,
     pub demo_stickers: bool,
+    /// Write a JSON account of the run at exit, for smoke tests.
+    pub check: Option<PathBuf>,
 }
 impl Options {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, &'static str> {
@@ -75,6 +77,13 @@ impl Options {
                         return Err("--snapshot requires a PNG path (at most 32768 bytes)");
                     }
                     options.snapshot = Some(path.into());
+                }
+                "--check" => {
+                    let path = args.next().ok_or("--check requires a JSON path")?;
+                    if path.len() > 32768 || !path.to_ascii_lowercase().ends_with(".json") {
+                        return Err("--check requires a JSON path (at most 32768 bytes)");
+                    }
+                    options.check = Some(path.into());
                 }
                 "--help" | "-h" => options.help = true,
                 _ => return Err("Unknown option; use --help"),
