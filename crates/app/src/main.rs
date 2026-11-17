@@ -5,15 +5,20 @@ mod config;
 mod demo;
 mod files;
 mod options;
+mod recovery;
 use std::{
     cell::RefCell,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex, mpsc},
 };
-use tg_core::{CommandError, CommandKind, Event, SecurityWarning};
+use tg_core::{Command, CommandError, CommandKind, Event, SecurityWarning};
 use tg_telegram::{Engine, EngineParameters};
 use tg_ui::{EventSink, Ui};
 fn main() -> std::process::ExitCode {
+    // Before any window, engine or library: DLL search order, image load policy, and a process
+    // DACL that keeps same-user programs out of this process's memory (SECURITY.md, T3).
+    let _hardening = tg_platform::harden_process();
     // Started from a terminal: print there. Started from Explorer: errors go to a message box.
     let console = tg_platform::attach_parent_console();
     match run() {
@@ -89,6 +94,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|_| "Configuration worker failed")??;
     let engine: Arc<Mutex<Option<Engine>>> = Arc::default();
     let dispatch = engine.clone();
+    // The lifecycle worker owns the receiver: the close token and the recovery choices.
+    let (control, controls) = mpsc::sync_channel::<Control>(2);
+    let choice = control.clone();
     let ui = Ui::new(
         tg_ui::Options {
             oled: options.oled,
@@ -102,6 +110,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             demo_stickers: false,
         },
         move |command| {
+            // Recovery choices go to the lifecycle worker; the engine is not running then.
+            let recovery = match command {
+                Command::RetryLocalData => Some(Control::Retry),
+                Command::ResetLocalData => Some(Control::Reset),
+                _ => None,
+            };
+            if let Some(recovery) = recovery {
+                return choice
+                    .try_send(recovery)
+                    .map_err(|_| failure("Ferrogram is busy. Please try again."));
+            }
             let slot = dispatch
                 .try_lock()
                 .map_err(|_| failure("The engine is busy. Please try again."))?;
@@ -117,57 +136,118 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Authorization can arrive before Engine::start returns. Hold delivery until
     // the handle is installed, otherwise the UI's default QR request can race it.
     sink.pause();
-    // Exactly one shutdown token. Startup and shutdown/join never run on the UI thread.
-    let (close, closed) = mpsc::sync_channel::<()>(1);
     let worker = std::thread::Builder::new()
         .name("tg-app-lifecycle".into())
-        .spawn(move || {
-            let started = (|| {
-                let protection = tg_security::load_or_create(&directory).map_err(|_| {
-                    failure("Could not unlock the database key. Existing key files were preserved.")
-                })?;
-                if !protection.tpm_protected {
-                    sink.post(Event::SecurityWarning(SecurityWarning::TpmUnavailable));
-                }
-                let events = sink.clone();
-                let parameters = EngineParameters {
-                    api_id: credentials.id,
-                    api_hash: credentials.hash,
-                    database_encryption_key: *protection.key.expose(),
-                    data_directory: directory,
-                };
-                drop(protection);
-                Engine::start(parameters, move |event| events.post(event))
-            })();
-            match started {
-                Ok(started) => {
-                    if let Ok(mut slot) = engine.lock() {
-                        *slot = Some(started);
-                    }
-                    sink.resume();
-                    let _ = closed.recv();
-                    let owned = engine.lock().ok().and_then(|mut slot| slot.take());
-                    if let Some(owned) = owned {
-                        owned.shutdown().map_err(|_| "Engine shutdown failed")?;
-                    }
-                }
-                Err(error) => {
-                    startup_error(&sink, error);
-                    sink.resume();
-                }
-            }
-            Ok::<_, &'static str>(())
-        })
+        .spawn(move || lifecycle(&directory, Some(credentials), &engine, &sink, &controls))
         .map_err(|_| "Could not start the lifecycle worker")?;
     let result = ui.run();
     drop(player);
     drop(notifications);
-    let _ = close.try_send(());
+    // Blocks only until the worker reads it; fails at once if the worker has already ended.
+    let _ = control.send(Control::Close);
     let shutdown = worker.join().map_err(|_| "Lifecycle worker failed")?;
     result?;
     shutdown?;
     Ok(())
 }
+/// Messages to the lifecycle worker.
+enum Control {
+    Close,
+    Retry,
+    Reset,
+}
+enum StartError {
+    /// The key file cannot be unlocked here; the user decides what happens next.
+    Locked,
+    Failed(CommandError),
+}
+
+/// Starts the engine, and when the database key cannot be unlocked offers the recovery screen
+/// until the user retries successfully, starts fresh, or closes the window. Never on the UI thread.
+fn lifecycle(
+    directory: &Path,
+    mut credentials: Option<config::Credentials>,
+    engine: &Arc<Mutex<Option<Engine>>>,
+    sink: &EventSink,
+    controls: &mpsc::Receiver<Control>,
+) -> Result<(), &'static str> {
+    loop {
+        // The first attempt uses the credentials read before the window opened.
+        let attempt = match credentials.take() {
+            Some(credentials) => Ok(credentials),
+            None => config::credentials().map_err(|error| StartError::Failed(failure(error))),
+        }
+        .and_then(|credentials| start_engine(directory, credentials, sink));
+        match attempt {
+            Ok(started) => {
+                if let Ok(mut slot) = engine.lock() {
+                    *slot = Some(started);
+                }
+                sink.resume();
+                // Recovery choices are meaningless once the engine runs.
+                while let Ok(Control::Retry | Control::Reset) = controls.recv() {}
+                let owned = engine.lock().ok().and_then(|mut slot| slot.take());
+                if let Some(owned) = owned {
+                    owned.shutdown().map_err(|_| "Engine shutdown failed")?;
+                }
+                return Ok(());
+            }
+            Err(StartError::Locked) => {
+                sink.post(Event::LocalDataLocked);
+                sink.resume();
+                match controls.recv() {
+                    Ok(Control::Retry) => sink.pause(),
+                    Ok(Control::Reset) => match recovery::move_aside(directory) {
+                        Ok(_) => sink.pause(),
+                        // Stay on the recovery screen; nothing was moved.
+                        Err(_) => startup_error(
+                            sink,
+                            failure(
+                                "Could not move the old data aside. Close programs that use it and try again.",
+                            ),
+                        ),
+                    },
+                    Ok(Control::Close) | Err(_) => return Ok(()),
+                }
+            }
+            Err(StartError::Failed(error)) => {
+                startup_error(sink, error);
+                sink.resume();
+                while let Ok(Control::Retry | Control::Reset) = controls.recv() {}
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn start_engine(
+    directory: &Path,
+    credentials: config::Credentials,
+    sink: &EventSink,
+) -> Result<Engine, StartError> {
+    let protection = tg_security::load_or_create(directory).map_err(|error| {
+        if error.is_unreadable_key() {
+            StartError::Locked
+        } else {
+            StartError::Failed(failure(
+                "Could not unlock the database key. Existing key files were preserved.",
+            ))
+        }
+    })?;
+    if !protection.tpm_protected {
+        sink.post(Event::SecurityWarning(SecurityWarning::TpmUnavailable));
+    }
+    let events = sink.clone();
+    let parameters = EngineParameters {
+        api_id: credentials.id,
+        api_hash: credentials.hash,
+        database_encryption_key: *protection.key.expose(),
+        data_directory: PathBuf::from(directory),
+    };
+    drop(protection);
+    Engine::start(parameters, move |event| events.post(event)).map_err(StartError::Failed)
+}
+
 /// Desktop notifications are optional: without a tray (restricted sessions, sandboxes)
 /// the client keeps running and shows a warning instead of exiting.
 fn attach_notifications(ui: &Ui) -> Option<Arc<tg_platform::Notifications>> {

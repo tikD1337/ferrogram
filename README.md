@@ -150,6 +150,10 @@ Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHIT
 - The TDLib database key is 32 random bytes, wrapped by a non-exportable TPM key and then by
   Windows DPAPI. It is designed so that a copied data folder cannot be opened on another
   computer; that scenario has not been tested yet.
+- Other programs running as your Windows user cannot read the client's memory while it runs, and
+  the key itself never reaches the page file.
+- If Windows ever refuses the key, the client explains it and offers to start fresh, keeping the
+  old data in a backup folder instead of deleting it.
 - Secrets never reach logs; API credentials stay in `.env`, outside git.
 - Found a vulnerability? Please report it privately, see [docs/SECURITY.md](docs/SECURITY.md).
 

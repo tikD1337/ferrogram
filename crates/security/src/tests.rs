@@ -220,3 +220,62 @@ fn native_tpm_persistent_round_trip() {
     assert!(loaded.tpm_protected);
     assert!(created.key.expose() == loaded.key.expose());
 }
+
+#[test]
+fn only_key_refusals_offer_a_fresh_start() {
+    use std::io::ErrorKind;
+    let refusals = [
+        Error::MissingTpmKey,
+        Error::InvalidFormat,
+        Error::UnsupportedVersion(9),
+        Error::Native {
+            operation: "TPM decrypt",
+            code: 0x8028_0084,
+        },
+        Error::Native {
+            operation: "TPM open",
+            code: 1,
+        },
+        Error::Native {
+            operation: "TPM provider",
+            code: 1,
+        },
+        Error::Native {
+            operation: "DPAPI unprotect",
+            code: 13,
+        },
+    ];
+    for error in refusals {
+        assert!(error.is_unreadable_key(), "{error:?}");
+    }
+    // Problems fixed outside the application must never lead to moving the data aside.
+    let others = [
+        Error::Io(ErrorKind::PermissionDenied),
+        Error::Io(ErrorKind::NotFound),
+        Error::UnsafeDataDirectory,
+        Error::Random,
+        Error::Native {
+            operation: "TPM create",
+            code: 1,
+        },
+        Error::Native {
+            operation: "DPAPI protect",
+            code: 1,
+        },
+    ];
+    for error in others {
+        assert!(!error.is_unreadable_key(), "{error:?}");
+    }
+}
+
+#[test]
+fn the_key_lives_on_a_locked_page_and_round_trips() {
+    let key = DatabaseKey::from_slice(&[7; 32]).expect("key");
+    assert_eq!(key.expose(), &[7; 32]);
+    // A fresh process has plenty of working-set quota for one page.
+    assert!(key.0.is_locked());
+    assert!(matches!(
+        DatabaseKey::from_slice(&[1; 31]),
+        Err(Error::InvalidFormat)
+    ));
+}

@@ -5,7 +5,7 @@
 //! off the UI thread. Callers must show a security warning when `tpm_protected` is
 //! false, including when reopening an existing DPAPI-only file.
 
-use ffi::Zeroing;
+use ffi::{LockedKey, Zeroing};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -29,20 +29,21 @@ const MAX_FILE_SIZE: usize = 16 * 1024;
 pub const KEY_FILE_NAME: &str = "database-key.bin";
 
 /// A fixed-length secret. No Clone, Copy, Display, serialization or public constructor.
-/// Heap storage is zeroed on drop, including early error returns.
-pub struct DatabaseKey(Box<Zeroing<[u8; 32]>>);
+/// It lives on its own page locked into RAM (never in the page file) and is zeroed on drop,
+/// including early error returns.
+pub struct DatabaseKey(LockedKey);
 
 impl DatabaseKey {
-    fn empty() -> Self {
-        Self(Box::new(Zeroing::new([0; 32])))
+    fn empty() -> Result<Self, Error> {
+        LockedKey::new().map(Self)
     }
 
     fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != 32 {
             return Err(Error::InvalidFormat);
         }
-        let mut key = Self::empty();
-        key.0.as_mut().copy_from_slice(bytes);
+        let mut key = Self::empty()?;
+        key.0.bytes_mut().copy_from_slice(bytes);
         Ok(key)
     }
 
@@ -50,7 +51,7 @@ impl DatabaseKey {
     /// Copies made by the caller or TDLib are outside this type's control.
     #[must_use]
     pub fn expose(&self) -> &[u8; 32] {
-        &self.0
+        self.0.bytes()
     }
 }
 
@@ -77,6 +78,28 @@ pub enum Error {
     UnsafeDataDirectory,
     MissingTpmKey,
     Native { operation: &'static str, code: u32 },
+}
+
+impl Error {
+    /// The key file exists but cannot be unwrapped on this machine and Windows account: the TPM
+    /// or DPAPI refused it, the TPM key is gone, or the file is not a key this build can read.
+    /// The data stays unreadable until the cause goes away, so the user may start fresh (the
+    /// application moves the old data aside) or try again. I/O and directory errors are not
+    /// included: they are fixed outside the application and must not lead to a reset.
+    pub fn is_unreadable_key(&self) -> bool {
+        match self {
+            Self::MissingTpmKey | Self::InvalidFormat | Self::UnsupportedVersion(_) => true,
+            Self::Native { operation, .. } => matches!(
+                *operation,
+                "TPM provider"
+                    | "TPM open"
+                    | "TPM decrypt"
+                    | "TPM get property"
+                    | "DPAPI unprotect"
+            ),
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -162,8 +185,8 @@ fn load_or_create_with(directory: &Path, crypto: &impl Protection) -> Result<Key
         Err(Error::Io(io::ErrorKind::NotFound)) => {}
         result => return result,
     }
-    let mut key = DatabaseKey::empty();
-    getrandom::fill(&mut key.0[..]).map_err(|_| Error::Random)?;
+    let mut key = DatabaseKey::empty()?;
+    getrandom::fill(&mut key.0.bytes_mut()[..]).map_err(|_| Error::Random)?;
     let wrapped = crypto.tpm_wrap(key.expose())?;
     let mode = if wrapped.is_some() {
         MODE_TPM

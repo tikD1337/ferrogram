@@ -117,4 +117,11 @@ pub enum Command {
     LogOut,
     /// Start closing; joining is a separate, blocking engine operation.
     ShutDown,
+    /// After `Event::LocalDataLocked`: try to unlock the database key again. Handled by the
+    /// application, never sent to the engine.
+    RetryLocalData,
+    /// After `Event::LocalDataLocked`: move the unreadable local data to a dated backup folder
+    /// next to it and start with a new key and an empty database. Nothing is deleted. Handled by
+    /// the application, never sent to the engine.
+    ResetLocalData,
 }

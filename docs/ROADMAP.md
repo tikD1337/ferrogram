@@ -159,16 +159,15 @@ zeroed after it is handed to TDLib. The TPM key is not bound to boot state (PCRs
 gesture, so any process running as the same Windows user can ask the TPM to unwrap it. Planned,
 in order of value for cost:
 
-1. **Process hardening (T3, client running).** A process DACL that denies memory reads and thread
-   injection to other processes of the same user; `SetProcessMitigationPolicy` (no dynamic code,
-   no extension points, signed DLLs only, as far as TDLib and the renderer allow);
-   `SetDefaultDllDirectories` for a safe DLL search order. Measure that the client and TDLib still
-   start and that RAM and CPU do not change.
-2. **Lock the key page in memory** with `VirtualLock`, so the key never reaches the page file. The
-   code only zeroes it today (SECURITY.md now says so).
-3. **Recovery when the key cannot be unlocked.** Today a TPM refusal left a bare error code. Show a
-   clear screen instead: move the old key and database to a dated backup folder and sign in again;
-   the chats come back from the server. Nothing is deleted without the user's confirmation.
+1. **Process hardening (T3, client running).** Done 2026-11-17: process DACL, System32-only DLL
+   search (as Telegram Desktop) and the image load policy. Signed-only images would refuse TDLib;
+   the no-dynamic-code and extension-point policies are untried (known driver and input-method
+   conflicts) and remain a later, measured step. Details in SECURITY.md.
+2. **Lock the key page in memory** with `VirtualLock`. Done 2026-11-17.
+3. **Recovery when the key cannot be unlocked.** Done 2026-11-17: a screen with Try again and
+   Start fresh; Start fresh renames the data directory to a dated backup and starts with a new
+   key. Tested on the real key file that stopped unlocking on 2026-11-17. The cause of that
+   failure (TPM decrypt 0x80280084 on an unchanged key file) is still unknown.
 4. **Master password (T2, client closed).** Optional, off by default (decided 2026-11-16). Argon2id
    from an audited RustCrypto implementation, wrapping added as the third layer; asked at start.
    It is the only measure that stops malware running as the same user from unwrapping the key.

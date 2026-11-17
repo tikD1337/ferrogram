@@ -178,6 +178,10 @@ pub enum SecurityWarning {
 #[non_exhaustive]
 pub enum Event {
     AuthStateChanged(AuthState),
+    /// The local database key exists but cannot be unlocked on this computer and account (the
+    /// TPM or DPAPI refused it). The engine is not running; the user chooses
+    /// `Command::RetryLocalData` or `Command::ResetLocalData`.
+    LocalDataLocked,
     /// Playback state of the open video, sent on player events.
     VideoState(crate::VideoState),
     FileUpdated(MediaFile),

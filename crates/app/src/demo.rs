@@ -633,8 +633,9 @@ fn page(chat: ChatId, before: MessageId, newer: bool) -> Event {
         let sender_id = if outgoing { 0 } else { 1000 + (id / 4) % 3 };
         let mut message = Message { attachment: None, video: None, reply: (id%6==4).then(||tg_core::Reply {resolved:true,chat,message:MessageId((id-3).max(1)*1048576),sender_id:1000,sender:"Anna Petrova".into(),preview:"Earlier synthetic message".into()}), forwarded: (id%9==0).then(||"Design review".into()), edited: outgoing && id%15==0, is_text: true, service: false, permissions: None, album: 0, sender_id, sender: (!outgoing).then(|| NAMES[(sender_id - 1000) as usize].to_owned()), photo: None, id: MessageId(id*1048576), chat, date: BASE_DATE + id as i32 * 60, outgoing, text: format!("{prefix}{text}{}", if id % 11 == 0 { " Long messages wrap at the current bubble width. We keep reading the same line while pages arrive above the viewport.".repeat(8) } else { String::new() }), entities, send_state: SendState::Sent };
         // A few service messages, drawn as centred pills.
-        if id % 13 == 3 && !outgoing {
-            let name = NAMES[(sender_id - 1000) as usize];
+        // Slot 3 of every 20 has no demo attachment (see media_page), so pills never displace one.
+        if id % 20 == 3 {
+            let name = if outgoing { "You" } else { NAMES[(sender_id - 1000) as usize] };
             message.text = if id % 2 == 0 { format!("{name} pinned a message") } else { format!("{name} joined the group via invite link") };
             message.entities.clear();
             message.reply = None;
