@@ -37,6 +37,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(())
     });
+    let played: Rc<Cell<u32>> = Rc::default();
+    let audio = played.clone();
+    ui.on_video(move |request| {
+        if matches!(request, VideoRequest::OpenAudio { .. }) {
+            audio.set(audio.get() + 1);
+        }
+        Ok(())
+    });
     let events = ui.event_sink();
     let state = ui.state.clone();
     let observed = ui.window.clone_strong();
@@ -54,7 +62,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 w.set_follow_tail(false);
                 state.feed.jump_target.set(Some(MessageId(id)));
                 state.refresh(&w);
-                state.attachment_click(&w, &id.to_string(), 0, 0.0);
+                if action != "voice-button" {
+                    state.attachment_click(&w, &id.to_string(), 0, 0.0);
+                }
+            }
+            if action == "voice-button" {
+                // A real left click on the play button, not a direct call: the button's touch
+                // area must sit over the button itself.
+                let weak = w.as_weak();
+                let state = state.clone();
+                slint::Timer::single_shot(Duration::from_millis(400), move || {
+                    if let Some(w) = weak.upgrade()
+                        && let Some(row) = (0..state.feed.row_count())
+                            .filter_map(|i| state.feed.row_data(i))
+                            .find(|r| r.key == id.to_string())
+                    {
+                        // The bubble's left edge, as `round_rect` computes it.
+                        let left = w.get_feed_left()
+                            + if row.outgoing {
+                                w.get_feed_view_width() - row.bubble_width - 14.0
+                            } else {
+                                14.0
+                            };
+                        // The play button is the 44 px circle at the attachment's left edge.
+                        let x = left + 10.0 + 22.0;
+                        let y = w.get_feed_top()
+                            + row.row_y
+                            + w.get_feed_y()
+                            + (w.get_feed_height() - w.get_feed_content_height()).max(0.0)
+                            + row.bubble_y
+                            + row.attachment_y
+                            + 7.0
+                            + 22.0;
+                        use slint::platform::{PointerEventButton, WindowEvent};
+                        for event in [
+                            WindowEvent::PointerMoved {
+                                position: slint::LogicalPosition::new(x, y),
+                            },
+                            WindowEvent::PointerPressed {
+                                position: slint::LogicalPosition::new(x, y),
+                                button: PointerEventButton::Left,
+                            },
+                            WindowEvent::PointerReleased {
+                                position: slint::LogicalPosition::new(x, y),
+                                button: PointerEventButton::Left,
+                            },
+                        ] {
+                            w.window().dispatch_event(event);
+                        }
+                    }
+                });
             }
             if action.starts_with("file-") || action == "folder" {
                 let weak = w.as_weak();
@@ -151,6 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "stickers"=>state.feed.row_data(0).is_some_and(|r|r.sticker),
         "file-progress"=>state.feed.history.borrow().messages.iter().any(|m|matches!(&m.attachment,Some(tg_core::Attachment::Document(d)) if d.file.downloaded==540 && d.file.downloading)),
         "file-menu"=>observed.get_menu_open() && observed.get_menu_can_reveal(),
+        "voice-button"=>played.get()==1,
         "file"=>shell.borrow().is_empty() && state.feed.history.borrow().messages.iter().any(|m|matches!(&m.attachment,Some(tg_core::Attachment::Document(d)) if d.file.path.is_some())),
         "file-cancel"=>shell.borrow().is_empty() && state.feed.history.borrow().messages.iter().any(|m|m.id==MessageId(19988*1048576) && matches!(&m.attachment,Some(tg_core::Attachment::Document(d)) if d.file.path.is_none() && !d.file.downloading)),
         _=>false,
@@ -166,10 +224,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     demo_backend::cleanup_media(&media)?;
     if !valid {
         eprintln!(
-            "menu_open={} can_reveal={} feed_y={}",
+            "menu_open={} can_reveal={} feed_y={} audio_requests={}",
             observed.get_menu_open(),
             observed.get_menu_can_reveal(),
-            observed.get_feed_y()
+            observed.get_feed_y(),
+            played.get()
         );
         return Err("Attachment review assertion failed".into());
     }

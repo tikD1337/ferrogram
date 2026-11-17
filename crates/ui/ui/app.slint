@@ -409,6 +409,14 @@ export component AppWindow inherits Window {
                         clip: true;
                         property <length> location-x: self.absolute-position.x;
                         property <length> location-y: self.absolute-position.y;
+                        // `changed` fires only on a change: without this, a feed created already in
+                        // place left feed-left at 0 and round videos and clicks were mispositioned.
+                        init => {
+                            root.feed-left = self.location-x;
+                            root.feed-top = self.location-y;
+                            root.feed-view-width = self.width;
+                            root.feed-height = self.height;
+                        }
                         changed location-x => { root.feed-left=self.location-x; root.viewport-changed(); }
                         changed location-y => { root.feed-top=self.location-y; root.viewport-changed(); }
                         changed width => { root.feed-view-width=self.width; root.viewport-changed(); }
@@ -512,7 +520,10 @@ export component AppWindow inherits Window {
                                         if msg.voice && msg.voice-unlistened: Rectangle { x: parent.width - 7px; y: 48px; width: 5px; height: 5px; border-radius: self.height / 2; background: Theme.accent; }
                                         if msg.document: Text { x: 56px; y: 9px; width: parent.width - 62px; height: 22px; text: msg.file-name; color: Theme.text; font-size: Theme.type-body; font-weight: 600; overflow: elide; }
                                         if msg.document: Text { x: 56px; y: 34px; width: parent.width - 62px; height: 20px; text: msg.file-size + (msg.file-downloading ? " / downloading" : msg.file-available ? " / Open file" : " / Download"); color: Theme.muted; font-size: Theme.type-meta; overflow: elide; }
+                                        // Explicit position: Slint centres an element that has a size but
+                                        // no x, which put the voice play button's area over the waveform.
                                         TouchArea {
+                                            x: 0px; y: 0px;
                                             width: msg.voice ? 48px : parent.width; height: parent.height;
                                             mouse-cursor: MouseCursor.pointer;
                                             clicked => { root.attachment-action(msg.key, 0, 0); }
