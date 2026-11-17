@@ -96,19 +96,20 @@ network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS
 - [x] Sign-in with a QR code or a phone number
 - [x] Chat list with avatars, last message time, unread and mention badges, muted chats
 - [x] Seamless history: pages load and unload while you scroll, without jumps
-- [x] Opens a chat at the first unread message; marks messages read when you actually see them ¹
+- [x] Opens a chat at the first unread message; marks messages read when you actually see them 
 - [x] Text with formatting, links, spoilers, right-to-left scripts and colour emoji
-- [x] Photos with captions, albums as one bubble with a photo grid ¹
-- [x] Date separators, sender names in groups, read checks ¹
+- [x] Photos with captions, albums as one bubble with a photo grid 
+- [x] Date separators, sender names in groups, read checks 
 - [x] Sending text messages
-- [x] Reply, edit, delete and forward from a context menu ¹
-- [x] Video playback with GPU decoding (Windows Media Foundation) ¹
-- [x] Voice messages with a waveform, and round video messages played inside their circle ¹
+- [x] Reply, edit, delete and forward from a context menu 
+- [x] Video playback with GPU decoding (Windows Media Foundation) 
+- [x] Voice messages with a waveform, and round video messages played inside their circle
 - [x] Files: download with progress, open with a SmartScreen mark, confirmation for programs ¹
-- [x] Static stickers and single emoji drawn large ¹
-- [x] Service messages ("Anna joined the group") as centred pills ¹
-- [x] Desktop notifications that open the chat ¹
-- [x] Videos start playing while they download, with seeking into parts not yet downloaded ¹
+- [x] Static stickers and single emoji drawn large 
+- [x] Service messages ("Anna joined the group") as centred pills 
+- [x] Desktop notifications that open the chat 
+- [x] Videos start playing while they download, with seeking into parts not yet downloaded
+- [x] Interface scale from 50 to 300 %, as in Telegram Desktop
 - [x] Night and OLED themes
 
 <sub>¹ New: tested in demo mode, not yet on a live account.</sub>
