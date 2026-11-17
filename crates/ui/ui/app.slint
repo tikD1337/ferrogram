@@ -77,6 +77,27 @@ component Input inherits Rectangle {
         accepted => { root.accepted(); }
     }
 }
+// One row of the message menu: an outline icon (24-unit path) and a label, as in Telegram.
+component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 38px;
+    background: touch.has-hover && root.enabled ? #ffffff12 : transparent;
+    Path {
+        x: 16px; y: (parent.height - 20px) / 2; width: 20px; height: 20px;
+        viewbox-width: 24; viewbox-height: 24;
+        commands: root.icon; fill: transparent;
+        stroke: root.enabled ? #e8edf2 : Theme.muted; stroke-width: 1.6px;
+    }
+    Text {
+        x: 52px; width: parent.width - 64px; height: parent.height; text: root.text; font-size: 14px;
+        vertical-alignment: center;
+        color: root.enabled ? Theme.text : Theme.muted;
+    }
+    touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
 component Avatar inherits Rectangle {
     in property <image> source;
     in property <string> initials;
@@ -152,6 +173,29 @@ export component AppWindow inherits Window {
     callback latest();
     // Action IDs: 0 reply, 1 edit, 2 copy, 3 forward, 4 delete, 5 open quote.
     callback message-action(key: string, action: int);
+    // In-window message menu (see the comment at the message bubble).
+    in-out property <bool> menu-open;
+    in-out property <length> menu-x;
+    in-out property <length> menu-y;
+    in-out property <string> menu-key;
+    in-out property <bool> menu-can-reply;
+    in-out property <bool> menu-can-edit;
+    in-out property <bool> menu-can-forward;
+    in-out property <bool> menu-can-delete;
+    function open-menu(key: string, reply: bool, edit: bool, forward: bool, delete: bool, x: length, y: length) {
+        root.menu-key = key;
+        root.menu-can-reply = reply;
+        root.menu-can-edit = edit;
+        root.menu-can-forward = forward;
+        root.menu-can-delete = delete;
+        root.menu-x = x;
+        root.menu-y = y;
+        root.menu-open = true;
+    }
+    function menu-pick(action: int) {
+        root.menu-open = false;
+        root.message-action(root.menu-key, action);
+    }
     callback cancel-action();
     callback confirm-delete();
     callback forward-to(index: int);
@@ -320,14 +364,13 @@ export component AppWindow inherits Window {
                                     border-top-left-radius: 12px; border-top-right-radius: 12px;
                                     border-bottom-left-radius: !msg.outgoing && msg.tail ? 4px : 12px;
                                     border-bottom-right-radius: msg.outgoing && msg.tail ? 4px : 12px;
-                                    ContextMenuArea {
+                                    TouchArea {
                                         enabled: !root.blocked && root.action-dialog == 0;
-                                        Menu {
-                                            MenuItem { title: "Reply"; enabled: msg.can-reply; activated => { root.message-action(msg.key, 0); } }
-                                            if msg.can-edit: MenuItem { title: "Edit"; activated => { root.message-action(msg.key, 1); } }
-                                            MenuItem { title: "Copy text"; activated => { root.message-action(msg.key, 2); } }
-                                            MenuItem { title: "Forward"; enabled: msg.can-forward; activated => { root.message-action(msg.key, 3); } }
-                                            MenuItem { title: "Delete"; enabled: msg.can-delete; activated => { root.message-action(msg.key, 4); } }
+                                        pointer-event(event) => {
+                                            if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                                                root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete,
+                                                    self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                            }
                                         }
                                     }
                                     if msg.forwarded != "": Text {
@@ -366,9 +409,15 @@ export component AppWindow inherits Window {
                                                 duration-text := Text { text: cell.duration; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                                             }
                                             play-touch := TouchArea {
-                                                enabled: cell.video && !root.blocked;
+                                                enabled: !root.blocked;
+                                                pointer-event(event) => {
+                                                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.up && root.action-dialog == 0 {
+                                                        root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete,
+                                                            self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                                    }
+                                                }
                                                 mouse-cursor: cell.video ? MouseCursor.pointer : MouseCursor.default;
-                                                clicked => { root.open-video(row, index); }
+                                                clicked => { if cell.video { root.open-video(row, index); } }
                                             }
                                         }
                                     }
@@ -497,6 +546,52 @@ export component AppWindow inherits Window {
     }
 
 
+    if root.menu-open: TouchArea {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        clicked => { root.menu-open = false; }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down { root.menu-open = false; }
+        }
+        scroll-event(event) => { root.menu-open = false; return reject; }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.menu-open = false; return accept; }
+                return reject;
+            }
+        }
+        Rectangle {
+            width: 210px; height: items.preferred-height;
+            x: min(root.menu-x, root.width - self.width - 8px);
+            y: min(root.menu-y, root.height - self.height - 8px);
+            background: Theme.oled ? #121212 : #1d2733; border-radius: 10px;
+            border-width: 1px; border-color: #ffffff0d;
+            drop-shadow-blur: 16px; drop-shadow-offset-y: 4px; drop-shadow-color: #00000090;
+            items := VerticalLayout {
+                padding-top: 6px; padding-bottom: 6px;
+                MenuRow {
+                    text: "Reply"; enabled: root.menu-can-reply; clicked => { root.menu-pick(0); }
+                    icon: "M10 8 L4 13 L10 18 M4 13 H14 C17.9 13 21 16.1 21 20";
+                }
+                if root.menu-can-edit: MenuRow {
+                    text: "Edit"; clicked => { root.menu-pick(1); }
+                    icon: "M4 20 L4.6 16.4 L15.5 5.5 L18.5 8.5 L7.6 19.4 Z M13.5 7.5 L16.5 10.5";
+                }
+                MenuRow {
+                    text: "Copy Text"; clicked => { root.menu-pick(2); }
+                    icon: "M9 8 H18 C18.6 8 19 8.4 19 9 V20 C19 20.6 18.6 21 18 21 H9 C8.4 21 8 20.6 8 20 V9 C8 8.4 8.4 8 9 8 Z M5 16 V4.5 C5 3.7 5.7 3 6.5 3 H15";
+                }
+                MenuRow {
+                    text: "Forward"; enabled: root.menu-can-forward; clicked => { root.menu-pick(3); }
+                    icon: "M14 8 L20 13 L14 18 M20 13 H10 C6.1 13 3 16.1 3 20";
+                }
+                MenuRow {
+                    text: "Delete"; enabled: root.menu-can-delete; clicked => { root.menu-pick(4); }
+                    icon: "M4 7 H20 M9.5 7 V4.5 H14.5 V7 M6 7 L7 20 H17 L18 7 M10 11 V16.5 M14 11 V16.5";
+                }
+            }
+        }
+    }
 }
 
 // Media viewer: a separate window, as in Telegram Desktop. The video is drawn by a native child

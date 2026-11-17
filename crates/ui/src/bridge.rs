@@ -3,10 +3,11 @@ use crate::AppWindow;
 use slint::ComponentHandle;
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
+    thread::ThreadId,
 };
 use tg_core::Event;
-const MAX_EVENTS: usize = 128;
+const MAX_EVENTS: usize = 1024;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Default)]
 struct Queue {
@@ -15,14 +16,19 @@ struct Queue {
     scheduled: bool,
     failed: bool,
     paused: bool,
+    /// The UI is gone: events are dropped and waiting producers are released.
+    closed: bool,
 }
 impl Queue {
+    fn full(&self, bytes: usize) -> bool {
+        self.events.len() >= MAX_EVENTS || self.bytes.saturating_add(bytes) > MAX_BYTES
+    }
     fn enqueue(&mut self, event: Event) -> bool {
-        if self.failed {
+        if self.failed || self.closed {
             return false;
         }
         let bytes = event_bytes(&event);
-        if self.events.len() == MAX_EVENTS || self.bytes.saturating_add(bytes) > MAX_BYTES {
+        if self.full(bytes) {
             self.failed = true;
             self.events.clear();
             self.bytes = 0;
@@ -40,8 +46,9 @@ impl Queue {
 }
 #[derive(Clone)]
 pub struct EventSink {
-    queue: Arc<Mutex<Queue>>,
+    queue: Arc<(Mutex<Queue>, Condvar)>,
     window: slint::Weak<AppWindow>,
+    ui_thread: ThreadId,
 }
 impl std::fmt::Debug for EventSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -53,13 +60,28 @@ impl EventSink {
         Self {
             queue: Arc::default(),
             window: window.as_weak(),
+            ui_thread: std::thread::current().id(),
         }
     }
-    /// Never blocks for UI progress. Overflow fails closed instead of dropping incremental updates silently.
+    /// A full queue makes background producers (the engine, the player) wait until the UI drains
+    /// it, so a modal Windows loop (a system dialog, moving the window) only delays updates. The
+    /// UI thread never waits; overflow there, or during startup, fails closed instead of
+    /// dropping incremental updates silently.
     pub fn post(&self, event: Event) {
-        let Ok(mut queue) = self.queue.lock() else {
+        let (lock, drained) = &*self.queue;
+        let Ok(mut queue) = lock.lock() else {
             return;
         };
+        if std::thread::current().id() != self.ui_thread {
+            let bytes = event_bytes(&event);
+            while queue.full(bytes) && !queue.closed && !queue.failed && !queue.paused {
+                // Woken by every drain and by close; not a timed poll.
+                queue = match drained.wait(queue) {
+                    Ok(queue) => queue,
+                    Err(_) => return,
+                };
+            }
+        }
         if !queue.enqueue(event) {
             return;
         }
@@ -69,13 +91,13 @@ impl EventSink {
     /// Hold delivery during engine startup; the same count/byte limits still apply.
     /// Call before starting the engine, so authorization callbacks cannot race handle publication.
     pub fn pause(&self) {
-        if let Ok(mut queue) = self.queue.lock() {
+        if let Ok(mut queue) = self.queue.0.lock() {
             queue.paused = true;
         }
     }
     /// Release queued startup events after the command target has been installed.
     pub fn resume(&self) {
-        let Ok(mut queue) = self.queue.lock() else {
+        let Ok(mut queue) = self.queue.0.lock() else {
             return;
         };
         queue.paused = false;
@@ -93,13 +115,25 @@ impl EventSink {
             .upgrade_in_event_loop(|window| window.invoke_drain_events());
     }
     pub(crate) fn drain(&self) -> Result<VecDeque<Event>, ()> {
-        let mut queue = self.queue.lock().map_err(|_| ())?;
+        let (lock, drained) = &*self.queue;
+        let mut queue = lock.lock().map_err(|_| ())?;
         queue.scheduled = false;
         queue.bytes = 0;
+        drained.notify_all();
         if queue.failed {
             return Err(());
         }
         Ok(std::mem::take(&mut queue.events))
+    }
+    /// Called when the UI stops: later events are dropped and waiting producers return.
+    pub(crate) fn close(&self) {
+        let (lock, drained) = &*self.queue;
+        if let Ok(mut queue) = lock.lock() {
+            queue.closed = true;
+            queue.events.clear();
+            queue.bytes = 0;
+        }
+        drained.notify_all();
     }
 }
 fn message_bytes(m: &tg_core::Message) -> usize {
@@ -213,5 +247,56 @@ mod tests {
             }
         }));
         assert!(queue.failed && queue.events.is_empty() && queue.bytes == 0);
+    }
+    fn detached() -> EventSink {
+        EventSink {
+            queue: Arc::default(),
+            window: slint::Weak::default(),
+            ui_thread: std::thread::current().id(),
+        }
+    }
+    fn flood(sink: &EventSink, done: std::sync::mpsc::Sender<()>) -> std::thread::JoinHandle<()> {
+        let sink = sink.clone();
+        std::thread::spawn(move || {
+            for _ in 0..=MAX_EVENTS {
+                sink.post(Event::ChatsLoaded { has_more: true });
+            }
+            let _ = done.send(());
+        })
+    }
+    #[test]
+    fn a_background_producer_waits_for_a_drain_instead_of_failing() {
+        let sink = detached();
+        let (done, finished) = std::sync::mpsc::channel();
+        let producer = flood(&sink, done);
+        // The UI is busy (as inside a modal Windows loop): the producer stays blocked.
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+        assert_eq!(sink.drain().unwrap().len(), MAX_EVENTS);
+        finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        producer.join().unwrap();
+        assert_eq!(sink.drain().unwrap().len(), 1);
+    }
+    #[test]
+    fn closing_releases_a_blocked_producer() {
+        let sink = detached();
+        let (done, finished) = std::sync::mpsc::channel();
+        let producer = flood(&sink, done);
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+        sink.close();
+        finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        producer.join().unwrap();
+        assert!(sink.drain().unwrap().is_empty());
     }
 }

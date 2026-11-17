@@ -1181,7 +1181,10 @@ impl Ui {
                 },
             );
         }
-        self.window.run()?;
+        let ran = self.window.run();
+        // Release producers that may wait for a drain that will never come again.
+        self.sink.close();
+        ran?;
         if let Some(saved) = result.borrow_mut().take() {
             saved?.join().map_err(|_| "Snapshot worker failed")??;
         } else if snapshot_requested {
