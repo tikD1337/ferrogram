@@ -130,8 +130,16 @@ work, so the client eventually covers what Telegram Desktop offers:
 - Voice messages: waveform, seeking and playback through the Media Engine in audio-only mode
   (the system Opus decoder handles OGG/Opus voice notes; no extra library). One voice or round
   message plays at a time, and playback marks it listened.
-- Round video messages play inside their circle in the feed: the video child window gets an
-  elliptic region clipped to the feed and follows the row while scrolling.
+- Round video messages play inside their circle in the feed and keep playing in a floating
+  circle when their row scrolls away, as in Telegram Desktop. A native child window with an
+  elliptic region dropped out of the composed screen (the window behind Ferrogram showed through
+  the circle), so rounds use the Media Engine in frame-server mode instead: each frame is
+  transferred into a texture of the round's size, copied to the CPU and drawn by Slint. The
+  preview stays until the first frame, and the playing round grows from 240 to 320 px. Measured
+  on the release demo round (10 samples, one synthetic clip): Private Bytes 123 MiB inline and
+  floating, about 20 MiB more than with the child window; reducing that is open.
+- Interface scale, as Telegram Desktop's: the default (system) scale or 50-300 % in 5 % steps,
+  stored in the data directory and applied by restarting Ferrogram.
 - Files: download with progress and cancel, then open with the default application. Opened files
   get the internet-zone mark (SmartScreen, Protected View), and programs and scripts need a
   confirmation first. Downloaded files can be shown in their folder.
