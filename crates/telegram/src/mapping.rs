@@ -186,8 +186,15 @@ pub(crate) fn message(
         Some(tg_core::Attachment::Document(document)) => {
             thumbnail(&content["document"], Some(document.file.id))?
         }
-        Some(tg_core::Attachment::Sticker(sticker)) => {
-            let s = &content["sticker"];
+        Some(tg_core::Attachment::Round(round)) => {
+            thumbnail(&content["video_note"], Some(round.file.id))?
+        }
+        Some(tg_core::Attachment::Sticker(sticker) | tg_core::Attachment::Emoji(sticker)) => {
+            let s = if content["@type"] == "messageAnimatedEmoji" {
+                &content["animated_emoji"]["sticker"]
+            } else {
+                &content["sticker"]
+            };
             if !sticker.animated {
                 Some(Photo {
                     file: media_file(&s["sticker"])?,
@@ -195,6 +202,8 @@ pub(crate) fn message(
                     height: sticker.height,
                     minithumbnail: vec![],
                 })
+            } else if matches!(attachment, Some(tg_core::Attachment::Emoji(_))) {
+                None
             } else {
                 thumbnail(s, None)?
             }
@@ -209,9 +218,13 @@ pub(crate) fn message(
         {
             &content["caption"]
         }
-        Some("messageSticker" | "messageVoiceNote" | "messageDocument") => {
-            &json!({"text":"","entities":[]})
-        }
+        Some(
+            "messageSticker"
+            | "messageVoiceNote"
+            | "messageDocument"
+            | "messageVideoNote"
+            | "messageAnimatedEmoji",
+        ) => &json!({"text":"","entities":[]}),
         _ => &placeholder,
     };
     let text = string(&formatted["text"], MAX_TEXT_BYTES)?;
@@ -439,7 +452,14 @@ impl Decoder {
                             },
                             256,
                         ),
-                        preview: truncate(m.text.replace(['\r', '\n'], " "), 256),
+                        preview: truncate(
+                            if let Some(tg_core::Attachment::Emoji(s)) = &m.attachment {
+                                s.emoji.clone()
+                            } else {
+                                m.text.replace(['\r', '\n'], " ")
+                            },
+                            256,
+                        ),
                     })
                 } else {
                     None
@@ -613,7 +633,7 @@ pub(crate) fn parse(json: &str) -> Result<Value, CommandError> {
     serde_json::from_str(json).map_err(|_| malformed())
 }
 
-pub(crate) fn content_label(content: &Value) -> &'static str {
+pub(crate) fn content_label(content: &Value) -> &str {
     match content["@type"].as_str() {
         Some("messagePhoto") => "Photo",
         Some("messageVideo") => "Video",
@@ -623,6 +643,7 @@ pub(crate) fn content_label(content: &Value) -> &'static str {
         Some("messageVoiceNote") => "Voice message",
         Some("messageAudio") => "Audio",
         Some("messageVideoNote") => "Video message",
+        Some("messageAnimatedEmoji") => content["emoji"].as_str().unwrap_or(""),
         Some("messageLocation" | "messageVenue") => "Location",
         Some("messageContact") => "Contact",
         Some("messagePoll") => "Poll",
@@ -752,8 +773,26 @@ fn photo(value: &Value) -> Result<Option<Photo>, CommandError> {
 }
 
 fn attachment(content: &Value) -> Result<Option<tg_core::Attachment>, CommandError> {
-    use tg_core::{Attachment, Document, Sticker, Voice};
+    use tg_core::{Attachment, Document, Round, Sticker, Voice};
     Ok(match content["@type"].as_str() {
+        Some("messageVideoNote") => {
+            let v = &content["video_note"];
+            Some(Attachment::Round(Round {
+                file: media_file(&v["video"])?,
+                duration: v["duration"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
+                length: v["length"].as_u64().unwrap_or(240).clamp(1, 240) as u16,
+                viewed: content["is_viewed"] == true,
+            }))
+        }
+        Some("messageAnimatedEmoji") => {
+            let s = &content["animated_emoji"]["sticker"];
+            Some(Attachment::Emoji(Sticker {
+                emoji: bounded_label(content["emoji"].as_str().unwrap_or(""), 64),
+                width: s["width"].as_u64().unwrap_or(128).clamp(1, 2048) as u16,
+                height: s["height"].as_u64().unwrap_or(128).clamp(1, 2048) as u16,
+                animated: s["format"]["@type"] != "stickerFormatWebp",
+            }))
+        }
         Some("messageVoiceNote") => {
             let v = &content["voice_note"];
             let encoded = v["waveform"].as_str().unwrap_or("");
@@ -838,6 +877,10 @@ pub(crate) fn attachment_preview(content: &Value) -> Option<String> {
             bounded_label(content["sticker"]["emoji"].as_str().unwrap_or(""), 64)
         )),
         Some("messageVoiceNote") => Some("Voice message".into()),
+        Some("messageVideoNote") => Some("Video message".into()),
+        Some("messageAnimatedEmoji") => {
+            Some(bounded_label(content["emoji"].as_str().unwrap_or(""), 64))
+        }
         Some("messageDocument") => Some(bounded_label(
             content["document"]["file_name"].as_str().unwrap_or("File"),
             256,

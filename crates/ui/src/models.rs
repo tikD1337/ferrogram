@@ -420,7 +420,15 @@ impl Feed {
         let scale = self.scale.get().clamp(0.5, 4.0);
         let max_width = self.width.get().clamp(80.0, 504.0);
         let (first, last) = (&group[0], &group[group.len() - 1]);
-        let sticker = matches!(first.attachment, Some(tg_core::Attachment::Sticker(_)));
+        let round = matches!(first.attachment, Some(tg_core::Attachment::Round(_)));
+        let sticker = matches!(
+            first.attachment,
+            Some(
+                tg_core::Attachment::Sticker(_)
+                    | tg_core::Attachment::Emoji(_)
+                    | tg_core::Attachment::Round(_)
+            )
+        );
         let card = matches!(
             first.attachment,
             Some(tg_core::Attachment::Voice(_) | tg_core::Attachment::Document(_))
@@ -454,10 +462,27 @@ impl Feed {
             Vec::new()
         };
         let (frames, media_width, media_height) =
-            if let Some(tg_core::Attachment::Sticker(s)) = &first.attachment {
-                let factor = 180.0_f32.min(max_width) / f32::from(s.width.max(s.height).max(1));
-                let (w, h) = (f32::from(s.width) * factor, f32::from(s.height) * factor);
-                (vec![[0.0, 0.0, w, h]], w, h)
+            if let Some(tg_core::Attachment::Round(r)) = &first.attachment {
+                let d = f32::from(r.length.clamp(1, 240)).min(max_width);
+                (vec![[0.0, 0.0, d, d]], d, d)
+            } else if let Some(tg_core::Attachment::Sticker(s) | tg_core::Attachment::Emoji(s)) =
+                &first.attachment
+            {
+                let limit = if matches!(first.attachment, Some(tg_core::Attachment::Emoji(_))) {
+                    128.0_f32
+                } else {
+                    180.0
+                };
+                if matches!(first.attachment, Some(tg_core::Attachment::Emoji(_)))
+                    && first.photo.is_none()
+                {
+                    let d = limit.min(max_width);
+                    (vec![[0.0, 0.0, d, d]], d, d)
+                } else {
+                    let factor = limit.min(max_width) / f32::from(s.width.max(s.height).max(1));
+                    let (w, h) = (f32::from(s.width) * factor, f32::from(s.height) * factor);
+                    (vec![[0.0, 0.0, w, h]], w, h)
+                }
             } else {
                 album_layout(&sizes, max_width)
             };
@@ -548,7 +573,7 @@ impl Feed {
         } else if card {
             attachment_y + card_height + FOOTER + PAD_BOTTOM
         } else {
-            media_y + media_height
+            media_y + media_height + if round { 26.0 } else { 0.0 }
         };
         let over_media = text.is_none() && !card;
         let (time_x, time_y) = if over_media {
@@ -576,27 +601,53 @@ impl Feed {
         let cell_rows: Vec<PhotoCell> = group
             .iter()
             .zip(&frames)
-            .map(|(m, f)| PhotoCell {
-                image: Image::default(),
-                label: if m.photo.is_some() || m.video.is_some() {
-                    Default::default()
+            .map(|(m, f)| {
+                let emoji = if let Some(tg_core::Attachment::Emoji(s)) = &m.attachment
+                    && m.photo.is_none()
+                {
+                    let mut emoji = m.clone();
+                    emoji.text.clone_from(&s.emoji);
+                    emoji.entities.clear();
+                    Some(
+                        self.engine
+                            .borrow_mut()
+                            .render_emoji(&emoji, scale, f[2] * scale),
+                    )
                 } else {
-                    if let Some(tg_core::Attachment::Sticker(s)) = &m.attachment {
-                        s.emoji.as_str().into()
+                    None
+                };
+                PhotoCell {
+                    raster_width: emoji.as_ref().map_or(0.0, |t| t.width as f32 / scale),
+                    raster_height: emoji.as_ref().map_or(0.0, |t| t.height as f32 / scale),
+                    image: emoji.map_or_else(Image::default, |t| {
+                        Image::from_rgba8_premultiplied(
+                            SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                                &t.pixels, t.width, t.height,
+                            ),
+                        )
+                    }),
+                    label: if m.photo.is_some() || m.video.is_some() {
+                        Default::default()
                     } else {
-                        m.text.as_str().into()
-                    }
-                },
-                x: f[0],
-                y: f[1],
-                width: f[2],
-                height: f[3],
-                video: m.video.is_some(),
-                duration: m
-                    .video
-                    .as_ref()
-                    .map_or_else(String::new, |v| clock::duration(v.duration))
-                    .into(),
+                        if matches!(m.attachment, Some(tg_core::Attachment::Emoji(_))) {
+                            Default::default()
+                        } else if let Some(tg_core::Attachment::Sticker(s)) = &m.attachment {
+                            s.emoji.as_str().into()
+                        } else {
+                            m.text.as_str().into()
+                        }
+                    },
+                    x: f[0],
+                    y: f[1],
+                    width: f[2],
+                    height: f[3],
+                    video: m.video.is_some(),
+                    duration: m
+                        .video
+                        .as_ref()
+                        .map_or_else(String::new, |v| clock::duration(v.duration))
+                        .into(),
+                }
             })
             .collect();
         let rendered = text.map_or_else(Image::default, |t| {
@@ -614,6 +665,8 @@ impl Feed {
         let permissions = first.permissions.unwrap_or_default();
         let mut row = MessageRow {
             attachment_y,
+            round,
+            emoji: matches!(first.attachment, Some(tg_core::Attachment::Emoji(_))),
             sticker,
             key: last.id.0.to_string().into(),
             can_edit: group.len() == 1 && first.outgoing && first.is_text && permissions.edit,

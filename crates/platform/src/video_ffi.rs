@@ -37,6 +37,7 @@ pub(crate) enum Message {
         window: isize,
         width: i32,
         height: i32,
+        token: Option<u64>,
     },
     OpenAudio {
         path: std::path::PathBuf,
@@ -127,8 +128,33 @@ impl Engine {
                 rgbRed: 0,
                 rgbAlpha: 255,
             };
-            // SAFETY: both pointers refer to locals that outlive this synchronous call.
-            let _ = unsafe { extended.UpdateVideoStream(None, Some(&target), Some(&black)) };
+            let mut source = windows::Win32::Media::MediaFoundation::MFVideoNormalizedRect {
+                left: 0.0,
+                top: 0.0,
+                right: 1.0,
+                bottom: 1.0,
+            };
+            if self.audio_token.is_some() {
+                let (mut w, mut h) = (0, 0);
+                // SAFETY: local output pointers and the engine owned by this MTA thread.
+                if unsafe { self.engine.GetNativeVideoSize(Some(&mut w), Some(&mut h)) }.is_ok()
+                    && w > 0
+                    && h > 0
+                {
+                    if w > h {
+                        let crop = (1.0 - h as f32 / w as f32) * 0.5;
+                        source.left = crop;
+                        source.right = 1.0 - crop;
+                    } else {
+                        let crop = (1.0 - w as f32 / h as f32) * 0.5;
+                        source.top = crop;
+                        source.bottom = 1.0 - crop;
+                    }
+                }
+            }
+            // SAFETY: all pointers refer to locals that outlive this synchronous call.
+            let _ =
+                unsafe { extended.UpdateVideoStream(Some(&source), Some(&target), Some(&black)) };
         }
     }
 
@@ -223,15 +249,17 @@ pub(crate) fn run(
                 window,
                 width,
                 height,
+                token,
             } => {
                 engine = None;
                 size = (width, height);
-                match Engine::open(&notify, &path, window, None) {
+                match Engine::open(&notify, &path, window, token) {
                     Ok(opened) => {
                         opened.resize(width, height);
                         engine = Some(opened);
                     }
                     Err(_) => report(tg_core::VideoState {
+                        audio_token: token,
                         failed: true,
                         ..Default::default()
                     }),
@@ -292,7 +320,11 @@ pub(crate) fn run(
 }
 
 /// Child window that receives the video. Created, moved and destroyed on the UI thread.
-pub(crate) struct ChildWindow(HWND);
+pub(crate) struct ChildWindow(
+    HWND,
+    std::cell::Cell<tg_core::VideoRect>,
+    std::cell::Cell<Option<tg_core::VideoRect>>,
+);
 
 impl ChildWindow {
     pub(crate) fn create(parent: isize, rect: tg_core::VideoRect) -> Result<Self, Error> {
@@ -337,14 +369,60 @@ impl ChildWindow {
             // SAFETY: reads this thread's last error right after the failed call.
             return Err(Error("video window", unsafe { GetLastError() }));
         }
-        Ok(Self(window))
+        Ok(Self(
+            window,
+            std::cell::Cell::new(rect),
+            std::cell::Cell::new(None),
+        ))
     }
 
     pub(crate) fn handle(&self) -> isize {
         self.0 as isize
     }
 
-    pub(crate) fn place(&self, rect: tg_core::VideoRect) {
+    pub(crate) fn round(&self, viewport: tg_core::VideoRect) -> Result<(), Error> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            CombineRgn, CreateEllipticRgn, CreateRectRgn, DeleteObject, RGN_AND, SetWindowRgn,
+        };
+        self.2.set(Some(viewport));
+        let r = self.1.get();
+        // SAFETY: temporary owned GDI regions, bounded physical dimensions from the UI. On
+        // successful SetWindowRgn ownership transfers to Windows; all other regions are freed.
+        unsafe {
+            let ellipse = CreateEllipticRgn(0, 0, r.width.max(1) + 1, r.height.max(1) + 1);
+            let clip = CreateRectRgn(
+                (viewport.x - r.x).max(0),
+                (viewport.y - r.y).max(0),
+                (viewport.x + viewport.width - r.x).min(r.width),
+                (viewport.y + viewport.height - r.y).min(r.height),
+            );
+            if ellipse.is_null() || clip.is_null() {
+                if !ellipse.is_null() {
+                    DeleteObject(ellipse);
+                }
+                if !clip.is_null() {
+                    DeleteObject(clip);
+                }
+                return Err(Error("round video region", GetLastError()));
+            }
+            let combined = CombineRgn(ellipse, ellipse, clip, RGN_AND);
+            DeleteObject(clip);
+            if combined == 0 || SetWindowRgn(self.0, ellipse, 1) == 0 {
+                DeleteObject(ellipse);
+                return Err(Error("round video region", GetLastError()));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn place(&self, rect: tg_core::VideoRect) -> Result<(), Error> {
+        self.1.set(rect);
+        if let Some(viewport) = self.2.get()
+            && let Err(error) = self.round(viewport)
+        {
+            // SAFETY: hide the live owned child if a new clipping region cannot be set.
+            unsafe { ShowWindow(self.0, windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE) };
+            return Err(error);
+        }
         // SAFETY: the window is owned by this struct and still alive.
         unsafe {
             SetWindowPos(
@@ -357,6 +435,7 @@ impl ChildWindow {
                 SWP_NOACTIVATE,
             )
         };
+        Ok(())
     }
 }
 
@@ -506,5 +585,74 @@ impl Drop for Backdrop {
     fn drop(&mut self) {
         // SAFETY: destroyed once on the UI thread that created it; WM_NCDESTROY frees the box.
         unsafe { DestroyWindow(self.0) };
+    }
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::*;
+    #[test]
+    fn round_region_excludes_corners_and_follows_viewport_after_move() {
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateRectRgn, DeleteObject, GetWindowRgn, PtInRegion,
+        };
+        // SAFETY: a temporary top-level STATIC window on this test thread; no shared HWNDs.
+        let parent = unsafe {
+            CreateWindowExW(
+                0,
+                windows_sys::w!("STATIC"),
+                std::ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                400,
+                400,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null(),
+            )
+        };
+        assert!(!parent.is_null());
+        let child = ChildWindow::create(
+            parent as isize,
+            tg_core::VideoRect {
+                x: 20,
+                y: 20,
+                width: 200,
+                height: 200,
+            },
+        )
+        .unwrap();
+        let viewport = tg_core::VideoRect {
+            x: 0,
+            y: 70,
+            width: 400,
+            height: 200,
+        };
+        child.round(viewport).unwrap();
+        // SAFETY: owned temporary output region; live child; querying never takes ownership.
+        unsafe {
+            let region = CreateRectRgn(0, 0, 0, 0);
+            assert_ne!(GetWindowRgn(child.0, region), 0);
+            assert_eq!(PtInRegion(region, 0, 60), 0);
+            assert_eq!(PtInRegion(region, 100, 20), 0);
+            assert_ne!(PtInRegion(region, 100, 100), 0);
+            child
+                .place(tg_core::VideoRect {
+                    x: 20,
+                    y: 80,
+                    width: 200,
+                    height: 200,
+                })
+                .unwrap();
+            assert_ne!(GetWindowRgn(child.0, region), 0);
+            assert_ne!(PtInRegion(region, 100, 20), 0);
+            assert_eq!(PtInRegion(region, 100, 195), 0);
+            DeleteObject(region);
+        }
+        drop(child);
+        // SAFETY: the child is gone; the parent is owned by this test and destroyed once.
+        unsafe { DestroyWindow(parent) };
     }
 }

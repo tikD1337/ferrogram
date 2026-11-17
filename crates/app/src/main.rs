@@ -25,7 +25,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = options::Options::parse(std::env::args().skip(1))?;
     if options.help {
         println!(
-            "tg-app [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-stickers]\n--demo runs synthetic conversations without TDLib, credentials or key files."
+            "tg-app [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-round <seconds>] [--demo-stickers]\n--demo runs synthetic conversations without TDLib, credentials or key files."
         );
         return Ok(());
     }
@@ -51,6 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 demo_scroll: options.demo_scroll,
                 demo_video: options.demo_video,
                 demo_voice: options.demo_voice,
+                demo_round: options.demo_round,
                 demo_stickers: options.demo_stickers,
             },
             move |command| commands.borrow_mut().command(command),
@@ -89,6 +90,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             demo_scroll: None,
             demo_video: None,
             demo_voice: None,
+            demo_round: None,
             demo_stickers: false,
         },
         move |command| {

@@ -4405,6 +4405,7 @@ dependencies = [
  "slint-build",
  "swash",
  "tg-core",
+ "tg-platform",
 ]
 
 [[package]]

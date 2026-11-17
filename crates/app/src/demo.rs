@@ -93,10 +93,12 @@ impl Demo {
         };
         match command {
             Command::OpenMessageContent { chat, message } => {
-                if let Some(mut m) = self.lookup(chat, message)
-                    && let Some(tg_core::Attachment::Voice(v)) = &mut m.attachment
-                {
-                    v.listened = true;
+                if let Some(mut m) = self.lookup(chat, message) {
+                    match &mut m.attachment {
+                        Some(tg_core::Attachment::Voice(v)) => v.listened = true,
+                        Some(tg_core::Attachment::Round(v)) => v.viewed = true,
+                        _ => {}
+                    }
                     self.remember(m)?;
                 }
                 sink.post(Event::MessageContentOpened { chat, message });
@@ -484,7 +486,7 @@ fn media_page(chat: ChatId, before: MessageId, newer: bool, text_only: bool) -> 
                 demo_attachment(message, 9);
                 continue;
             }
-            if matches!(n % 20, 4 | 8 | 9 | 14 | 17 | 18) {
+            if matches!(n % 20, 4 | 8 | 9 | 14 | 17 | 18 | 15 | 16 | 19) {
                 demo_attachment(message, n % 20);
                 continue;
             }
@@ -876,6 +878,23 @@ fn demo_attachment(m: &mut Message, kind: i64) {
         downloading: false,
     };
     m.attachment = Some(match kind {
+        15 | 16 => {
+            m.photo = Some(demo_photo((100000 + n) as i32));
+            let mut f = file(VIDEO_FILE_ID);
+            f.size = include_bytes!("../assets/demo-video.mp4").len() as u64;
+            Attachment::Round(tg_core::Round {
+                file: f,
+                duration: 4,
+                length: 240,
+                viewed: kind == 15,
+            })
+        }
+        19 => Attachment::Emoji(Sticker {
+            emoji: "\u{1f642}".into(),
+            width: 128,
+            height: 128,
+            animated: true,
+        }),
         4 => {
             let mut f = file(2_000_000);
             f.size = include_bytes!("../assets/demo-voice.ogg").len() as u64;
@@ -938,4 +957,30 @@ fn demo_file(base: &std::path::Path, id: i32) -> (std::path::PathBuf, u64) {
         ("jpg", include_bytes!("../assets/demo-photo.jpg").len())
     };
     (base.with_extension(extension), size as u64)
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::*;
+    #[test]
+    fn round_messages_preserve_every_member_of_existing_demo_albums() {
+        let Event::MessagesLoaded { messages, .. } =
+            media_page(ChatId(1), MessageId(20000 * 1048576), false, false)
+        else {
+            panic!("page")
+        };
+        for (first, last) in [(19981, 19982), (19985, 19987), (19990, 19993)] {
+            for n in first..=last {
+                let m = messages
+                    .iter()
+                    .find(|m| m.id == MessageId(n * 1048576))
+                    .unwrap();
+                assert_eq!(
+                    m.album, first,
+                    "round messages must not split synthetic albums"
+                );
+                assert!(m.photo.is_some() && m.attachment.is_none());
+            }
+        }
+    }
 }

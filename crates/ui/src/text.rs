@@ -139,12 +139,56 @@ impl TextEngine {
             emoji_family,
         }
     }
+    pub fn render_emoji(&mut self, message: &Message, scale: f32, width: f32) -> Rendered {
+        let mut rendered = self.render_sized(message, scale, width, 120.0);
+        let (mut left, mut top) = (rendered.width, rendered.height);
+        let (mut right, mut bottom) = (0, 0);
+        for (y, row) in rendered
+            .pixels
+            .chunks_exact(rendered.width as usize * 4)
+            .enumerate()
+        {
+            for (x, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
+                if pixel[3] != 0 {
+                    left = left.min(x as u32);
+                    right = right.max(x as u32 + 1);
+                    top = top.min(y as u32);
+                    bottom = bottom.max(y as u32 + 1);
+                }
+            }
+        }
+        if bottom > top && right > left {
+            let mut pixels = Vec::with_capacity(((right - left) * (bottom - top) * 4) as usize);
+            for row in rendered
+                .pixels
+                .chunks_exact(rendered.width as usize * 4)
+                .skip(top as usize)
+                .take((bottom - top) as usize)
+            {
+                pixels.extend_from_slice(&row[(left * 4) as usize..(right * 4) as usize]);
+            }
+            rendered.pixels = pixels;
+            rendered.width = right - left;
+            rendered.height = bottom - top;
+        }
+        rendered
+    }
     pub fn render(&mut self, message: &Message, scale: f32, width: f32) -> Rendered {
+        self.render_sized(message, scale, width, 14.0)
+    }
+    /// Shape at the requested font size; callers display the resulting pixels 1:1 at the DPI.
+    pub fn render_sized(
+        &mut self,
+        message: &Message,
+        scale: f32,
+        width: f32,
+        font_size: f32,
+    ) -> Rendered {
         let family = format!("Segoe UI, {}, sans-serif", self.emoji_family);
         let mut builder = self
             .layouts
             .ranged_builder(&mut self.fonts, &message.text, scale, true);
-        builder.push_default(StyleProperty::FontSize(14.0));
+        builder.push_default(StyleProperty::FontSize(font_size));
         builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
             Cow::Borrowed(&family),
         )));
@@ -191,8 +235,22 @@ impl TextEngine {
         }
         .ceil()
         .clamp(1.0, width) as u32;
-        let (placements, legacy_height) = message_lines(&layout, &message.text);
-        let full_height = legacy_height.ceil().max(1.0) as u32;
+        let (mut placements, legacy_height) = message_lines(&layout, &message.text);
+        // Large colour strikes can extend beyond the font's line metrics. Leave raster room
+        // above/below the baseline; render_emoji trims transparent padding afterwards.
+        let padding = if font_size > 14.0 {
+            (font_size * scale * 0.3).ceil() as u32
+        } else {
+            0
+        };
+        for p in &mut placements {
+            p.shift += padding as f32;
+            p.top += padding as f32;
+            p.bottom += padding as f32;
+            p.content_top += padding as f32;
+        }
+        let image_width = image_width + 2 * padding;
+        let full_height = legacy_height.ceil().max(1.0) as u32 + 2 * padding;
         let height = full_height.min((MAX_IMAGE_BYTES / (image_width as usize * 4)) as u32);
         let mut canvas = Canvas {
             width: image_width,
@@ -230,7 +288,7 @@ impl TextEngine {
             }
             for item in line.items() {
                 if let PositionedLayoutItem::GlyphRun(run) = item {
-                    self.draw(&mut canvas, &run, placement.shift);
+                    self.draw(&mut canvas, &run, placement.shift, padding as f32);
                 }
             }
         }
@@ -275,7 +333,7 @@ impl TextEngine {
             last_line,
         }
     }
-    fn draw(&mut self, canvas: &mut Canvas, run: &GlyphRun<'_, Color>, shift: f32) {
+    fn draw(&mut self, canvas: &mut Canvas, run: &GlyphRun<'_, Color>, shift: f32, shift_x: f32) {
         let font = run.run().font();
         if self.font_keys.len() >= 128 {
             self.font_keys.clear();
@@ -365,7 +423,7 @@ impl TextEngine {
                             (run.style().brush, u32::from(glyph.bytes[i]))
                         };
                         canvas.blend(
-                            floor as i32 + glyph.left + x as i32,
+                            floor as i32 + glyph.left + x as i32 + shift_x as i32,
                             (placed.y + shift).round() as i32 - glyph.top + y as i32,
                             color,
                             coverage,
@@ -466,6 +524,31 @@ mod tests {
         engine.render(&message, 1.0, 180.0);
         assert_eq!(engine.glyphs.len(), cached);
         assert_eq!(engine.bytes, bytes);
+        message.text = "\u{1f642}".into();
+        for scale in [1.0, 2.0] {
+            let emoji = engine.render_emoji(&message, scale, 128.0 * scale);
+            assert!(
+                emoji.width <= (128.0 * scale) as u32 && emoji.height <= (128.0 * scale) as u32
+            );
+            assert!(emoji.height >= (110.0 * scale) as u32);
+            let edge = emoji
+                .pixels
+                .chunks_exact(emoji.width as usize * 4)
+                .filter(|row| row[row.len() - 1] != 0)
+                .count();
+            assert!(
+                edge < emoji.height as usize / 2,
+                "Round emoji glyph was clipped at the right edge"
+            );
+            assert!(
+                emoji
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[3] > 0 && p[0] != p[2])
+            );
+        }
         message.text =
             "\u{05e9}\u{05dc}\u{05d5}\u{05dd} \u{0645}\u{0631}\u{062d}\u{0628}\u{0627}".into();
         let rtl = engine.render(&message, 1.0, 180.0);

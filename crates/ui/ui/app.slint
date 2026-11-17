@@ -21,13 +21,13 @@ export global Theme {
 }
 export struct ChatRow { avatar: image, initials: string, color: color, title: string, preview: string, time: string, unread: string, mentions: string, muted: bool, selected: bool }
 export struct WaveBar { amplitude: length, played: bool }
-export struct PhotoCell { image: image, label: string, x: length, y: length, width: length, height: length, video: bool, duration: string }
+export struct PhotoCell { raster-width: length, raster-height: length, image: image, label: string, x: length, y: length, width: length, height: length, video: bool, duration: string }
 // One feed row: a date separator (optional) and one bubble holding a message or an album.
 export struct MessageRow {
     voice: bool, voice-playing: bool, voice-unlistened: bool, voice-time: string, waveform: [WaveBar],
     document: bool, file-name: string, file-size: string, file-progress: string,
     file-available: bool, file-downloading: bool, attachment-image: image, attachment-y: length,
-    sticker: bool,
+    sticker: bool, round: bool, emoji: bool, round-progress: string,
     key: string, can-edit: bool, can-delete: bool, can-forward: bool, can-reply: bool,
     highlighted: bool, forwarded: string, sender-y: length,
     has-quote: bool, quote-y: length, quote-sender: string, quote-preview: string, quote-color: color,
@@ -149,6 +149,9 @@ export component AppWindow inherits Window {
     // Row height matches CHAT_ROW in models.rs.
     out property <bool> chat-near-end: root.chats.length * 62px + root.chat-y < root.chat-height * 3;
     in property <bool> at-newest: true;
+    in-out property <length> feed-left;
+    in-out property <length> feed-top;
+    in-out property <length> feed-view-width;
     callback viewport-changed();
     callback wheel(delta: length);
     callback chat-viewport-changed();
@@ -183,6 +186,7 @@ export component AppWindow inherits Window {
     callback message-action(key: string, action: int);
     // In-window message menu (see the comment at the message bubble).
     in-out property <bool> menu-open;
+    changed menu-open => { root.viewport-changed(); }
     in-out property <length> menu-x;
     in-out property <length> menu-y;
     in-out property <string> menu-key;
@@ -221,6 +225,7 @@ export component AppWindow inherits Window {
     changed destination-y => { root.chat-viewport-changed(); }
     // 0 closed, 1 delete confirmation, 2 forward destination.
     in-out property <int> action-dialog;
+    changed action-dialog => { root.viewport-changed(); }
     in property <bool> can-revoke;
     in property <bool> must-revoke;
     in-out property <bool> revoke;
@@ -341,6 +346,11 @@ export component AppWindow inherits Window {
                     }
                     feed-area := Rectangle {
                         clip: true;
+                        property <length> location-x: self.absolute-position.x;
+                        property <length> location-y: self.absolute-position.y;
+                        changed location-x => { root.feed-left=self.location-x; root.viewport-changed(); }
+                        changed location-y => { root.feed-top=self.location-y; root.viewport-changed(); }
+                        changed width => { root.feed-view-width=self.width; root.viewport-changed(); }
                         changed height => { root.feed-height = self.height; root.viewport-changed(); }
                         wheel-area := TouchArea {
                             width: parent.width; height: parent.height;
@@ -445,18 +455,18 @@ export component AppWindow inherits Window {
                                     }
                                     if msg.media-height > 0px: Rectangle {
                                         x: 0px; y: msg.media-y; width: msg.media-width; height: msg.media-height; clip: true;
-                                        border-top-left-radius: msg.media-y == 0px ? 12px : 0px;
-                                        border-top-right-radius: msg.media-y == 0px ? 12px : 0px;
-                                        border-bottom-left-radius: msg.media-caption ? 0px : !msg.outgoing && msg.tail ? 4px : 12px;
-                                        border-bottom-right-radius: msg.media-caption ? 0px : msg.outgoing && msg.tail ? 4px : 12px;
+                                        border-top-left-radius: msg.round ? self.width / 2 : msg.media-y == 0px ? 12px : 0px;
+                                        border-top-right-radius: msg.round ? self.width / 2 : msg.media-y == 0px ? 12px : 0px;
+                                        border-bottom-left-radius: msg.round ? self.width / 2 : msg.media-caption ? 0px : !msg.outgoing && msg.tail ? 4px : 12px;
+                                        border-bottom-right-radius: msg.round ? self.width / 2 : msg.media-caption ? 0px : msg.outgoing && msg.tail ? 4px : 12px;
                                         for cell[index] in msg.cells: Rectangle {
                                             x: cell.x; y: cell.y; width: cell.width; height: cell.height; background: msg.sticker ? transparent : Theme.field;
                                             Text { text: cell.label; color: Theme.muted; font-size: msg.sticker ? 80px : 13px; horizontal-alignment: center; vertical-alignment: center; }
-                                            Image { source: cell.image; width: parent.width; height: parent.height; image-fit: cover; }
-                                            if cell.video: Rectangle {
+                                            Image { source: cell.image; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; width: cell.raster-width > 0px ? cell.raster-width : parent.width; height: cell.raster-height > 0px ? cell.raster-height : parent.height; image-fit: msg.emoji ? contain : cover; }
+                                            if cell.video || msg.round: Rectangle {
                                                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                                 width: 48px; height: 48px; border-radius: 24px; background: play-touch.has-hover ? #000000a0 : #00000080;
-                                                Path { x: 18px; y: 14px; width: 16px; height: 20px; viewbox-width: 16; viewbox-height: 20; fill: #ffffff; commands: "M0 0 L16 10 L0 20 Z"; }
+                                                Path { x: 18px; y: 14px; width: 16px; height: 20px; viewbox-width: 16; viewbox-height: 20; fill: #ffffff; commands: msg.round && msg.voice-playing ? "M0 0 H5 V20 H0 Z M11 0 H16 V20 H11 Z" : "M0 0 L16 10 L0 20 Z"; }
                                             }
                                             if cell.video && cell.duration != "": Rectangle {
                                                 x: 8px; y: 8px; height: 20px; width: duration-text.preferred-width + 14px; border-radius: 10px; background: #00000080;
@@ -470,10 +480,23 @@ export component AppWindow inherits Window {
                                                             self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                                                     }
                                                 }
-                                                mouse-cursor: cell.video ? MouseCursor.pointer : MouseCursor.default;
-                                                clicked => { if cell.video { root.open-video(row, index); } }
+                                                mouse-cursor: cell.video || msg.round ? MouseCursor.pointer : MouseCursor.default;
+                                                clicked => { if msg.round { root.attachment-action(msg.key,0,0); } else if cell.video { root.open-video(row, index); } }
                                             }
                                         }
+                                    }
+                                    if msg.round: Rectangle {
+                                        x: 6px; y: msg.media-y + msg.media-height + 4px; height: 20px;
+                                        width: round-time.preferred-width + (msg.voice-unlistened ? 26px : 16px);
+                                        border-radius: 10px; background: #00000080;
+                                        round-time := Text { x: 8px; text: msg.file-progress != "" ? msg.file-progress : msg.voice-time;
+                                            height: parent.height; color: #ffffff; font-size: 12px; vertical-alignment: center; }
+                                        if msg.voice-unlistened: Rectangle { x: parent.width - 12px; y: 8px; width: 5px; height: 5px; border-radius: 3px; background: #ffffff; }
+                                    }
+                                    if msg.round && msg.file-downloading: Path {
+                                        x: 0px; y: msg.media-y; width: msg.media-width; height: msg.media-height;
+                                        viewbox-width: 100; viewbox-height: 100; fill: transparent; stroke: Theme.accent; stroke-width: 1.5px;
+                                        commands: msg.round-progress;
                                     }
                                     if msg.text-height > 0px: Image { x: 10px; y: msg.text-y; width: msg.text-width; height: msg.text-height; source: msg.rendered; }
                                     if msg.time-over-media: Rectangle {

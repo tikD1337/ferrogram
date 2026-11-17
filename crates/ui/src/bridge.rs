@@ -211,7 +211,10 @@ fn attachment_bytes(value: &Option<tg_core::Attachment>) -> usize {
     match value {
         Some(tg_core::Attachment::Voice(v)) => v.waveform.capacity() + file_bytes(&v.file),
         Some(tg_core::Attachment::Document(d)) => d.name.capacity() + file_bytes(&d.file),
-        Some(tg_core::Attachment::Sticker(s)) => s.emoji.capacity() + 64,
+        Some(tg_core::Attachment::Sticker(s) | tg_core::Attachment::Emoji(s)) => {
+            s.emoji.capacity() + 64
+        }
+        Some(tg_core::Attachment::Round(v)) => file_bytes(&v.file) + 32,
         None => 0,
     }
 }

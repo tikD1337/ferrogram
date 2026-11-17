@@ -84,7 +84,34 @@ impl Player {
                     window: handle,
                     width: rect.width,
                     height: rect.height,
+                    token: None,
                 })
+            }
+            VideoRequest::OpenRound {
+                path,
+                window,
+                rect,
+                viewport,
+                token,
+            } => {
+                self.close();
+                let child = ChildWindow::create(window, rect)?;
+                child.round(viewport)?;
+                let handle = child.handle();
+                *self.window.borrow_mut() = Some(child);
+                queued(Message::Open {
+                    path,
+                    window: handle,
+                    width: rect.width,
+                    height: rect.height,
+                    token: Some(token),
+                })
+            }
+            VideoRequest::RoundViewport(viewport) => {
+                if let Some(child) = self.window.borrow().as_ref() {
+                    child.round(viewport)?;
+                }
+                Ok(())
             }
             VideoRequest::OpenAudio { path, token } => {
                 self.close();
@@ -94,7 +121,7 @@ impl Player {
             }
             VideoRequest::Move(rect) => {
                 if let Some(child) = self.window.borrow().as_ref() {
-                    child.place(rect);
+                    child.place(rect)?;
                 }
                 queued(Message::Resize {
                     width: rect.width,

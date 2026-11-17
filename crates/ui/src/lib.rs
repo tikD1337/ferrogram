@@ -44,6 +44,7 @@ pub struct Options {
     /// Demo only: open the newest synthetic video after startup and exit after this many seconds.
     pub demo_video: Option<u32>,
     pub demo_voice: Option<u32>,
+    pub demo_round: Option<u32>,
     pub demo_stickers: bool,
     /// Loaded off-thread by tg-app. At most 32 MiB, never bundled.
     pub emoji_font: Option<Vec<u8>>,
@@ -87,7 +88,14 @@ impl State {
         }
     }
     fn video(&self, window: &AppWindow, request: VideoRequest) {
+        let inline = matches!(
+            &request,
+            VideoRequest::OpenRound { .. } | VideoRequest::RoundViewport(_) | VideoRequest::Move(_)
+        );
         if let Err(error) = (self.video.borrow())(request) {
+            if inline {
+                self.stop_voice(window);
+            }
             self.viewer.set_loading(false);
             self.viewer.set_failed(true);
             window.set_error(error.message.into());
@@ -244,6 +252,7 @@ impl State {
         self.refreshing.set(false);
         self.prefetch(window, top, height, total);
         self.sync_media(window);
+        self.sync_round(window);
         self.view_visible(window);
         self.query_properties(window);
     }
@@ -821,6 +830,7 @@ pub struct Ui {
     demo_scroll: Option<u32>,
     demo_video: Option<u32>,
     demo_voice: Option<u32>,
+    demo_round: Option<u32>,
     state: Rc<State>,
 }
 impl std::fmt::Debug for Ui {
@@ -1108,6 +1118,7 @@ impl Ui {
             demo_scroll: options.demo_scroll,
             demo_video: options.demo_video,
             demo_voice: options.demo_voice,
+            demo_round: options.demo_round,
             state,
         })
     }
@@ -1158,6 +1169,32 @@ impl Ui {
                 },
             );
         }
+        if let Some(seconds) = self.demo_round {
+            let weak = self.window.as_weak();
+            let state = self.state.clone();
+            slint::Timer::single_shot(Duration::from_millis(1500), move || {
+                let round = state
+                    .feed
+                    .history
+                    .borrow()
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.attachment, Some(tg_core::Attachment::Round(_))))
+                    .cloned();
+                if let Some(w) = weak.upgrade()
+                    && let Some(round) = round
+                {
+                    w.set_follow_tail(false);
+                    state.feed.jump_target.set(Some(round.id));
+                    state.refresh(&w);
+                    state.demo_play_voice(&w, &round);
+                }
+            });
+            slint::Timer::single_shot(Duration::from_secs(u64::from(seconds)), || {
+                let _ = slint::quit_event_loop();
+            });
+        }
         if let Some(seconds) = self.demo_voice {
             let weak = self.window.as_weak();
             let state = self.state.clone();
@@ -1206,6 +1243,7 @@ impl Ui {
             slint::Timer::single_shot(
                 Duration::from_secs(u64::from(
                     self.demo_voice
+                        .or(self.demo_round)
                         .map(|s| s.saturating_sub(1).clamp(2, 5))
                         .unwrap_or(self.demo_scroll.unwrap_or(2)),
                 )),

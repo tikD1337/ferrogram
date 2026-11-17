@@ -4,6 +4,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attachment {
     Voice(Voice),
+    Round(Round),
+    /// A single emoji uses the sticker layout at a smaller display size.
+    Emoji(Sticker),
     Document(Document),
     Sticker(Sticker),
 }
@@ -14,6 +17,14 @@ pub struct Voice {
     /// Unpacked samples in 0..=31; at most 409 (256 packed bytes).
     pub waveform: Vec<u8>,
     pub listened: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Round {
+    pub file: MediaFile,
+    pub duration: u32,
+    /// Logical diameter, bounded independently of the decoder's source dimensions.
+    pub length: u16,
+    pub viewed: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {

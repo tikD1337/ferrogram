@@ -8,7 +8,7 @@
 
 mod attachments;
 pub use attachments::{
-    Attachment, Document, FileRequest, Sticker, Voice, decode_waveform, is_executable_name,
+    Attachment, Document, FileRequest, Round, Sticker, Voice, decode_waveform, is_executable_name,
     waveform_bars,
 };
 mod command;

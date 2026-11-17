@@ -9,6 +9,7 @@ pub(crate) struct Options {
     pub demo_scroll: Option<u32>,
     pub demo_video: Option<u32>,
     pub demo_voice: Option<u32>,
+    pub demo_round: Option<u32>,
     pub demo_stickers: bool,
 }
 impl Options {
@@ -35,6 +36,15 @@ impl Options {
                 "--demo-stickers" => {
                     options.demo = true;
                     options.demo_stickers = true;
+                }
+                "--demo-round" => {
+                    options.demo = true;
+                    options.demo_round = Some(
+                        args.next()
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .filter(|s| (3..=86400).contains(s))
+                            .ok_or("--demo-round requires 3..86400 seconds")?,
+                    );
                 }
                 "--demo-voice" => {
                     options.demo = true;
@@ -111,6 +121,10 @@ mod attachment_tests {
         let v = Options::parse(["--demo-voice".into(), "12".into()]).unwrap();
         assert!(v.demo);
         assert_eq!(v.demo_voice, Some(12));
+        let r = Options::parse(["--demo-round", "8"].map(str::to_owned)).unwrap();
+        assert!(r.demo);
+        assert_eq!(r.demo_round, Some(8));
+        assert!(Options::parse(["--demo-round", "2"].map(str::to_owned)).is_err());
         for value in ["0", "2", "86401", "x"] {
             assert!(Options::parse(["--demo-voice".into(), value.into()]).is_err());
         }
