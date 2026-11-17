@@ -11,6 +11,9 @@ pub use files::Files;
 mod byte_stream;
 #[allow(unsafe_code)]
 mod files_ffi;
+#[allow(unsafe_code)]
+mod scale;
+pub use scale::set_interface_scale;
 mod streaming;
 mod video;
 #[allow(unsafe_code)]
