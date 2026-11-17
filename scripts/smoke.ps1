@@ -82,17 +82,33 @@ public static class FerrogramSmoke {
 $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $audio = @(Get-PnpDevice -Class AudioEndpoint -Status OK -ErrorAction SilentlyContinue).Count -gt 0
 
+# One command-line argument with the Windows (CommandLineToArgvW) quoting rules: quotes around it
+# when it is empty or has spaces, tabs or quotes; backslashes doubled only before a quote.
+function ConvertTo-Argument([string]$value) {
+    if ($value -and $value -notmatch '[\s"]') { return $value }
+    $escaped = [regex]::Replace($value, '(\\*)"', { param($m) $m.Groups[1].Value * 2 + '\"' })
+    $escaped = [regex]::Replace($escaped, '(\\+)$', { param($m) $m.Groups[1].Value * 2 })
+    return '"' + $escaped + '"'
+}
+
 # Starts the client, optionally probes it while it runs, waits with a hard limit, returns the report.
+# The probe gets the process and the deadline and must return by the deadline.
 function Invoke-Client([string]$name, [string[]]$arguments, [int]$limitSec, [scriptblock]$whileRunning) {
     $check = Join-Path $Out "$name.json"
     Remove-Item -LiteralPath $check -ErrorAction SilentlyContinue
-    $all = @($arguments) + @('--check', $check)
+    # Start-Process joins -ArgumentList into one command line, so every argument is quoted here.
+    $line = (@($arguments) + @('--check', $check) | ForEach-Object { ConvertTo-Argument $_ }) -join ' '
     $started = Get-Date
-    $process = Start-Process -FilePath $Exe -ArgumentList $all -PassThru
-    if ($whileRunning) { & $whileRunning $process }
-    if (-not $process.WaitForExit($limitSec * 1000)) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-        throw "$name did not finish within $limitSec s"
+    $deadline = $started.AddSeconds($limitSec)
+    $process = Start-Process -FilePath $Exe -ArgumentList $line -PassThru
+    try {
+        if ($whileRunning) { & $whileRunning $process $deadline }
+        $remaining = [math]::Max(0, [int]($deadline - (Get-Date)).TotalMilliseconds)
+        if (-not $process.WaitForExit($remaining)) {
+            throw "$name did not finish within $limitSec s"
+        }
+    } finally {
+        if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
     }
     $process.WaitForExit()
     if ($process.ExitCode -ne 0) { throw "$name exited with code $($process.ExitCode)" }
@@ -132,7 +148,7 @@ $scenarios = @{
     # memory reads from this (same-user) script.
     video = {
         $probe = {
-            param($process)
+            param($process, $deadline)
             Start-Sleep -Seconds 3
             $script:memoryRead = [FerrogramSmoke]::CanOpen([uint32]$process.Id, 0x0010)
             $script:query = [FerrogramSmoke]::CanOpen([uint32]$process.Id, 0x1000)
@@ -176,9 +192,9 @@ $scenarios = @{
     # Fast scrolling through the long history keeps memory bounded (pages are dropped).
     scroll = {
         $probe = {
-            param($process)
+            param($process, $deadline)
             $script:samples = @()
-            while (-not $process.HasExited) {
+            while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
                 Start-Sleep -Milliseconds 500
                 $process.Refresh()
                 if (-not $process.HasExited) { $script:samples += $process.PrivateMemorySize64 }
