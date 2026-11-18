@@ -167,8 +167,19 @@ work, so the client eventually covers what Telegram Desktop offers:
   Checked on a live account: the first frame of a 11.5 MB clip with its index at the end
   arrives after 0.84 s instead of 3.1 s.
 
-Next: reactions, pinning, message links and selection; a clear recovery screen when the
-database key cannot be unlocked; switching from QR back to phone sign-in.
+Next: reactions, pinning, message links and selection; switching from QR back to phone sign-in.
+
+## Progress (2026-11-18): name and first public release
+
+- The client is now called Veygram (it was Ferrogram, one letter away from ferogram, an existing
+  Rust MTProto framework). The repository moved to github.com/tikD1337/veygram; old URLs redirect.
+  Storage identifiers keep tg-rust, so sessions and keys survive the rename.
+- A portable release zip for GitHub Releases (`scripts/package-release.ps1`): the executable,
+  TDLib with OpenSSL and zlib, the Visual C++ runtime and the license texts. The executable loads
+  `tdjson.dll` from its own folder and carries Veygram's own API credentials, built in at release
+  time only. Checked from a clean folder with no `.env`: TDLib loads and the server issues a QR
+  sign-in code. Not checked yet on a Windows installation without the Visual C++ runtime.
+- `main` requires the lint, unit test and release build checks before a pull request merges.
 
 
 ## Security work (2026-11-17)
@@ -233,10 +244,10 @@ Promises and open items found in the other documents that had no place in this p
 
 **Release** (ARCHITECTURE.md, section 6)
 
-- How users get `tdjson.dll`: release builds from official TDLib source at a pinned commit, with
-  the hash recorded and verified.
-- Review the Telegram API terms for third-party clients before the first public release.
-- A distributable package (an archive or an installer) and release notes.
+- Done 2026-11-18: a portable zip with `tdjson.dll` built from official TDLib source at a pinned
+  commit, release notes on GitHub Releases, Veygram's own API credentials (SECURITY.md).
+- An installer, code signing (SmartScreen warns today) and automatic updates.
+- Verify the published TDLib hash in the packaging script instead of trusting the local build.
 
 
 ## User review (2026-11-17): what the client lacks next to Telegram Desktop

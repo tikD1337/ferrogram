@@ -206,12 +206,12 @@ These are hypotheses. Each is validated by before and after measurements.
 |---|---|
 | TDLib memory exceeds the estimate and cannot be controlled | Measure at stage 0; reconsideration threshold ~100 MB; fallback — grammers |
 | Slint cannot handle the message feed | Prototype as the first step of stage 2; fallback — GPUI |
-| Prebuilt `tdjson.dll` is downloaded from a third-party repository | Acceptable for development; releases must be built from official source at a pinned commit with hash verification |
-| Own `api_id`/`api_hash` required; Telegram API terms are mandatory for third-party clients | Register at my.telegram.org; study the terms before a public release |
+| Prebuilt `tdjson.dll` is downloaded from a third-party repository | Done: TDLib is built from official source at a pinned commit (`scripts/build-tdlib.ps1`, SHA-256 in BENCHMARKS.md) and shipped next to the executable in the release zip |
+| Own `api_id`/`api_hash` required; Telegram API terms are mandatory for third-party clients | Registered at my.telegram.org; the release carries Veygram's own pair, built in (section 8, SECURITY.md) |
 | Malware under the same account while the client is running | Full protection is impossible; see [SECURITY.md](SECURITY.md) |
 | Media brings native dependencies (rlottie, VP9, Opus) | Introduce them one at a time, each with measurements and lazy loading |
 | Calls require WebRTC | Outside the upcoming stages |
-| Slint's license constrains the project's license | Resolve before the first public release |
+| Slint's license constrains the project's license | Resolved: GPL-3.0-or-later matches Slint's GPL option (section 7) |
 | Scope: a full client is a very large project | Stages with exit criteria; no feature is declared ready without tests |
 
 ## Sources
@@ -238,3 +238,21 @@ These are hypotheses. Each is validated by before and after measurements.
   large static bright areas that could burn in.
 - **License: GPL-3.0-or-later.** Free software, the same license family as Telegram
   Desktop, and it matches the GPL option of Slint, so no separate Slint license is needed.
+
+## 8. Decisions of 2026-11-17 and 2026-11-18
+
+- **Media through the Windows Media Foundation Media Engine**, no bundled codecs. The media viewer
+  presents into a native child window; voice messages use the audio-only mode; round videos use
+  frame-server mode, and the interface draws their frames clipped to the circle. A child window
+  with an elliptic region dropped out of the composed screen, so rounds have no native window.
+- **Video streaming** reads TDLib's partial file through a read-only `IMFByteStream`, with a
+  bounded download window (ROADMAP.md, BENCHMARKS.md).
+- **Interface scale** as Telegram Desktop's (50-300 %, 5 % steps), applied by restarting, because
+  Slint reads its scale factor once at startup.
+- **Name: Veygram** (until 2026-11-18 Ferrogram, before that tg-rust). Storage identifiers keep
+  `tg-rust`, so existing sessions and keys stay valid.
+- **Public release: a portable zip** (`scripts/package-release.ps1`): the executable, TDLib with
+  OpenSSL and zlib, the Visual C++ runtime and license texts in one folder. The executable loads
+  `tdjson.dll` from its own folder, otherwise from the TDLib installation it was built against.
+  Veygram's own `api_id`/`api_hash` are built into release executables only; development builds
+  read `.env`. An installer, code signing and automatic updates are later steps.

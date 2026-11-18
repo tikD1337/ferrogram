@@ -23,19 +23,29 @@ pub(crate) struct TdJson {
 
 impl TdJson {
     pub(crate) fn load() -> Result<Self, CommandError> {
-        let path = PathBuf::from(env!("TG_TDLIB_DIR"))
-            .join("bin")
-            .join("tdjson.dll");
+        // A release ships tdjson.dll next to the executable, as Telegram Desktop ships its
+        // libraries. Only that absolute path is tried, never the working directory; a build
+        // without it falls back to the TDLib installation it was built against.
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("tdjson.dll")))
+            .filter(|path| path.is_absolute() && path.is_file());
+        let path = beside.unwrap_or_else(|| {
+            PathBuf::from(env!("TG_TDLIB_DIR"))
+                .join("bin")
+                .join("tdjson.dll")
+        });
         if !path.is_absolute() {
             return Err(error(-4, "TDLIB_DIR must be absolute."));
         }
         #[cfg(windows)]
-        // SAFETY: the caller supplies the trusted TDLib installation. Use the DLL directory
-        // and standard system search directories for its dependencies, excluding the CWD.
+        // SAFETY: the trusted TDLib copy beside the executable or the build's installation.
+        // Its dependencies come from the DLL's own directory and the standard system search
+        // directories (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | DEFAULT_DIRS), never the CWD.
         let library: Library = unsafe {
             libloading::os::windows::Library::load_with_flags(&path, 0x0000_0100 | 0x0000_1000)
         }
-        .map_err(|_| error(-4, "Could not load TDLib from TDLIB_DIR/bin."))?
+        .map_err(|_| error(-4, "Could not load TDLib (tdjson.dll)."))?
         .into();
         #[cfg(not(windows))]
         // SAFETY: same trusted absolute path requirement; only the Windows build is supported.

@@ -125,6 +125,13 @@ network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS
 
 ## 🚀 Try it
 
+### Download
+
+Get `Veygram-<version>-windows-x64.zip` from [Releases](https://github.com/tikD1337/veygram/releases),
+unpack the whole folder anywhere you alone can write to and start `veygram.exe`. Keep the DLL files
+next to it. Windows 10 or 11, x64. The build is not code-signed yet, so SmartScreen may warn on the
+first start; the SHA-256 of each zip is published next to it.
+
 ### Demo mode, no account needed
 
 `--demo` runs the whole interface on synthetic data, with no account, network or key files:
@@ -133,7 +140,7 @@ network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS
 cargo run --release -p tg-app -- --demo
 ```
 
-### With your account
+### Build it yourself with your account
 
 1. Install rustup, MSVC Build Tools and CMake, and build TDLib: [docs/SETUP.md](docs/SETUP.md).
 2. Get an `api_id` and `api_hash` at <https://my.telegram.org>.
@@ -179,7 +186,8 @@ Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHIT
   the key itself never reaches the page file.
 - If Windows ever refuses the key, the client explains it and offers to start fresh, keeping the
   old data in a backup folder instead of deleting it.
-- Secrets never reach logs; API credentials stay in `.env`, outside git.
+- Secrets never reach logs. Developer API credentials stay in `.env`, outside git; release
+  builds carry Veygram's own application credentials, which identify the app, not you.
 - Found a vulnerability? Please report it privately, see [docs/SECURITY.md](docs/SECURITY.md).
 
 <details>
@@ -194,7 +202,7 @@ Details and the reasoning behind each choice: [docs/ARCHITECTURE.md](docs/ARCHIT
 | `crates/security` | Database key protection (TPM, DPAPI) |
 | `crates/platform` | Windows integration: notifications, video and audio playback (Media Foundation), opening files, startup error box |
 | `spikes/` | Throwaway prototypes used for measurements, not part of the product |
-| `scripts/` | Resource measurement and TDLib build scripts |
+| `scripts/` | Resource measurement, smoke tests, TDLib build and release packaging scripts |
 | `bench/results/` | Raw measurement data |
 | `docs/` | Architecture, benchmarks, security, roadmap, setup |
 

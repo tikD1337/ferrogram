@@ -10,12 +10,12 @@ intentionally kept out of git: API credentials, the TDLib build and build direct
 | Git | `winget install Git.Git` | Source code |
 | rustup | `winget install Rustlang.Rustup` | Rust; the required version (1.100.0) is installed automatically from `rust-toolchain.toml` |
 | MSVC Build Tools 2022 or later | `winget install Microsoft.VisualStudio.BuildTools`, select “Desktop development with C++” | Linker for Rust, compiler and CMake for TDLib |
-| GitHub CLI | `winget install GitHub.cli`, then `gh auth login` | Access to the private repository |
+| GitHub CLI | `winget install GitHub.cli`, then `gh auth login` | Cloning, pull requests and releases |
 
 ## 2. Source code
 
 ```powershell
-gh repo clone tikD1337/telegram-rust
+gh repo clone tikD1337/veygram
 ```
 
 ## 3. API credentials
@@ -55,12 +55,30 @@ Point `TDLIB_DIR` at `<Root>\install` when building the client.
 The build takes tens of minutes and occupies several gigabytes. The result is
 `<Root>\install\bin\tdjson.dll` and the DLLs alongside it.
 
+At run time the client loads `tdjson.dll` from its own folder when it is there (a release),
+otherwise from `TDLIB_DIR\bin` recorded at build time (a development build).
+
+## 6a. A release package
+
+`scripts\package-release.ps1` builds the portable zip that GitHub Releases offer: `veygram.exe`,
+`tdjson.dll` with OpenSSL and zlib, the Visual C++ runtime DLLs and the license texts.
+
+```powershell
+.\scripts\package-release.ps1 -TdlibBin <Root>\install\bin -CrtDir <MSVC redist>\x64\Microsoft.VC145.CRT -LicenseDir <vcpkg>\installed\x64-windows\share
+```
+
+It reads `TG_API_ID` and `TG_API_HASH` from `.env` and builds them into the executable
+(`VEYGRAM_BUILD_API_ID`, `VEYGRAM_BUILD_API_HASH`), as every distributed Telegram client carries its
+own application credentials. It never prints them and builds into its own `target-release`
+directory, so development builds do not contain them. The zip and its SHA-256 land in
+`target-release\dist`.
+
 ## 7. What to read to get up to speed
 
 1. [ROADMAP.md](ROADMAP.md) — what is done and what comes next.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — accepted decisions and their rationale.
 3. [BENCHMARKS.md](BENCHMARKS.md) — all measurements.
-4. [SECURITY.md](SECURITY.md) — the session protection proposal and three open questions.
+4. [SECURITY.md](SECURITY.md) — session protection, process hardening and the release's trust model.
 5. [../CLAUDE.md](../CLAUDE.md) — project rules for AI coding assistants; machine-specific notes go
    into `CLAUDE.local.md`, which is not committed.
 
@@ -85,8 +103,7 @@ cd ..\..
 ```
 
 If the login code does not arrive (this happens with newly registered `api_id` values), sign in
-by QR code instead: run `.\spikes	dlib-probe
-un.ps1 -Qr` and scan the code with Telegram on
+by QR code instead: run `.\spikes\tdlib-probe\run.ps1 -Qr` and scan the code with Telegram on
 your phone (Settings > Devices > Link Desktop Device).
 
 When it prints `READY`, measure it from a second terminal:

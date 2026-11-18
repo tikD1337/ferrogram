@@ -2,8 +2,9 @@
 
 Status: **accepted 2026-11-16, partly implemented.** Done: the TPM + DPAPI key chain, the key on a
 locked page and zeroed, process hardening (2026-11-17) and a recovery screen when the key cannot be
-unlocked (2026-11-17). Not done yet: the master password, Windows Hello and automatic locking. The
-order is in [ROADMAP.md](ROADMAP.md), "Security work".
+unlocked (2026-11-17), and the trust model of the public release package (2026-11-18). Not done
+yet: the master password, Windows Hello, automatic locking, code signing and dependency audits in CI.
+The order is in [ROADMAP.md](ROADMAP.md), "Security work".
 
 ## Goal
 
@@ -88,7 +89,8 @@ research: the standard API provides signing, rather than decryption. Investigate
   rights; an administrator with SeDebugPrivilege still gets in.
 - **DLL search order**, as Telegram Desktop does: libraries loaded by name come only from System32
   (`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`). TDLib is loaded by absolute path
-  with its own directory for its dependencies.
+  with its own directory for its dependencies: `tdjson.dll` next to `veygram.exe` in a release,
+  otherwise the TDLib installation the build was made against. Never from the working directory.
 - **Image load policy:** no images from network shares or low-integrity locations.
 - Not enabled: signed-only images, because TDLib and its OpenSSL DLLs are not Microsoft-signed and
   would be refused. Prohibiting dynamic code and disabling extension points were not tried: both are
@@ -110,6 +112,29 @@ a fresh start.
 
 This raises the cost of an attack, but is not a security boundary.
 
+### The release package (2026-11-18)
+
+The public release is a zip from `scripts/package-release.ps1`: `veygram.exe`, `tdjson.dll`,
+OpenSSL, zlib, the Visual C++ runtime DLLs and the license texts, unpacked into one folder.
+
+- **Application credentials are built in.** Every Telegram client that is distributed carries its
+  `api_id` and `api_hash` (Telegram Desktop compiles them in as `TDESKTOP_API_ID`/`TDESKTOP_API_HASH`).
+  They identify the application to Telegram, not the user, and give no access to any account; anyone
+  can extract them from the executable. The risk is to the application: someone could use them in
+  another program, and Telegram could limit them. They never enter the repository or a log; the
+  build reads them from `.env` into build-time variables. Veygram uses its own credentials, never
+  Telegram Desktop's: Telegram asks every third-party client to register its own (my.telegram.org;
+  Telegram Desktop's sources refuse to build without them), and presenting another client's pair
+  would impersonate that client. An environment variable or `.env` still overrides the built-in pair.
+- **Libraries beside the executable.** `tdjson.dll` is loaded by its absolute path in the
+  executable's folder, its dependencies from that folder and System32, never from the working
+  directory. Whoever can write into that folder can also replace `veygram.exe`, so this adds no new
+  attack: unpack the release into a folder only your account can write to, not a shared one.
+- **No code signing yet.** SmartScreen warns on first start. The release publishes the zip's SHA-256
+  next to it; signing is open.
+- The Visual C++ runtime is copied app-locally, as Microsoft allows, so it is not updated by Windows
+  Update; a new release brings a new copy.
+
 ### What we do not do
 
 - **Chrome-style application binding** (a service with SYSTEM privileges): requires
@@ -119,9 +144,9 @@ This raises the cost of an attack, but is not a security boundary.
 ### Other measures
 
 - Codes, passwords, keys and phone numbers never enter logs.
-- The UI provides a list of active sessions and a recommendation to enable two-factor
-  authentication: a stolen session can be terminated from another device.
-- Dependencies are checked with `cargo audit` and `cargo deny`.
+- Planned: a list of active sessions and a recommendation to enable two-step verification in
+  the UI, so a stolen session can be ended from another device.
+- Planned: dependency checks with `cargo audit` and `cargo deny` in CI.
 
 ## Decisions for you
 
