@@ -26,11 +26,11 @@
 
 .EXAMPLE
     .\scripts\measure-video.ps1
-    .\scripts\measure-video.ps1 -Clients ferrogram,Telegram -PlaySec 90
+    .\scripts\measure-video.ps1 -Clients veygram,Telegram -PlaySec 90
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Clients = @('ferrogram', 'Telegram', 'AyuGram'),
+    [string[]]$Clients = @('veygram', 'Telegram', 'AyuGram'),
     [int]$ChatSec = 30,
     [int]$PlaySec = 60,
     [int]$ClosedSec = 30,

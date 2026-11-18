@@ -1,4 +1,4 @@
-# Ferrogram interface system
+# Veygram interface system
 
 The source of truth for values is the `Theme` global in `crates/ui/ui/app.slint`. This file records
 the decisions behind it. Code uses `Theme.*` tokens only: no hex colours, font sizes or corner radii
@@ -6,7 +6,7 @@ written inline.
 
 ## Direction
 
-Ferrogram looks like Telegram Desktop's night theme on purpose. People switch from the official client
+Veygram looks like Telegram Desktop's night theme on purpose. People switch from the official client
 and should feel at home, so we do not invent our own visual identity. The craft goal is consistency
 and restraint, not novelty.
 

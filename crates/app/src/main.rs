@@ -38,7 +38,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = options::Options::parse(std::env::args().skip(1))?;
     if options.help {
         println!(
-            "ferrogram [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-round <seconds>] [--demo-stickers] [--demo-video <seconds>] [--check <json>]\n--demo runs synthetic conversations without TDLib, credentials or key files."
+            "veygram [--demo | --demo-text-only] [--theme dark|oled] [--snapshot <png>] [--demo-scroll <seconds>] [--demo-voice <seconds>] [--demo-round <seconds>] [--demo-stickers] [--demo-video <seconds>] [--check <json>]\n--demo runs synthetic conversations without TDLib, credentials or key files."
         );
         return Ok(());
     }
@@ -129,7 +129,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(recovery) = recovery {
                 return choice
                     .try_send(recovery)
-                    .map_err(|_| failure("Ferrogram is busy. Please try again."));
+                    .map_err(|_| failure("Veygram is busy. Please try again."));
             }
             let slot = dispatch
                 .try_lock()
@@ -170,11 +170,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     shutdown?;
     // Only after TDLib has closed its database, so the new process can open it.
     if restart.get() {
-        let exe = std::env::current_exe().map_err(|_| "Could not find Ferrogram to restart it")?;
+        let exe = std::env::current_exe().map_err(|_| "Could not find Veygram to restart it")?;
         std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
             .spawn()
-            .map_err(|_| "Could not restart Ferrogram")?;
+            .map_err(|_| "Could not restart Veygram")?;
     }
     Ok(())
 }

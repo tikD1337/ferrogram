@@ -767,7 +767,7 @@ const VIDEO_FILE_ID: i32 = 1_000_000;
 /// Called by the startup worker. One synthetic JPEG and one synthetic MP4 (the same name with
 /// another extension) per process, no account data.
 pub(crate) fn prepare_media() -> std::io::Result<std::path::PathBuf> {
-    let path = std::env::temp_dir().join(format!("ferrogram-demo-{}.jpg", std::process::id()));
+    let path = std::env::temp_dir().join(format!("veygram-demo-{}.jpg", std::process::id()));
     std::fs::write(&path, include_bytes!("../assets/demo-photo.jpg"))?;
     std::fs::write(
         path.with_extension("mp4"),

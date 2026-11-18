@@ -1,13 +1,15 @@
 <div align="center">
 
-<img src="docs/images/icon.png" width="128" alt="Ferrogram icon">
+<img src="docs/images/icon.png" width="128" alt="Veygram icon">
 
-# Ferrogram
+# Veygram
+
+<sub>Formerly Ferrogram.</sub>
 
 **A native Telegram client for Windows that stays light.**<br>
 Written in Rust. About 8× less memory than Telegram Desktop, measured.
 
-[![CI](https://github.com/tikD1337/ferrogram/actions/workflows/ci.yml/badge.svg)](https://github.com/tikD1337/ferrogram/actions/workflows/ci.yml)
+[![CI](https://github.com/tikD1337/veygram/actions/workflows/ci.yml/badge.svg)](https://github.com/tikD1337/veygram/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-17212B?style=flat-square&logo=windows&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-1.100-D9822B?style=flat-square&logo=rust&logoColor=white)
 ![UI](https://img.shields.io/badge/UI-Slint-3E88C7?style=flat-square)
@@ -20,7 +22,7 @@ Written in Rust. About 8× less memory than Telegram Desktop, measured.
 </div>
 
 > [!IMPORTANT]
-> **Ferrogram is an unofficial client in early development.** It is not affiliated with or endorsed
+> **Veygram is an unofficial client in early development.** It is not affiliated with or endorsed
 > by Telegram. It uses the official [TDLib](https://github.com/tdlib/td) library and your own API
 > credentials. Expect missing features and rough edges.
 
@@ -56,13 +58,13 @@ Ten minutes idle on the same account, all three clients running at the same time
 Method and raw data: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 <p align="center">
-  <img src="docs/images/chart-memory.svg" alt="Memory: Ferrogram 57.5 MB, Telegram Desktop 465.0 MB, AyuGram 541.6 MB" width="720"><br><br>
-  <img src="docs/images/chart-cpu.svg" alt="CPU: Ferrogram 0.25 %, Telegram Desktop 0.37 %, AyuGram 0.55 %" width="720">
+  <img src="docs/images/chart-memory.svg" alt="Memory: Veygram 57.5 MB, Telegram Desktop 465.0 MB, AyuGram 541.6 MB" width="720"><br><br>
+  <img src="docs/images/chart-cpu.svg" alt="CPU: Veygram 0.25 %, Telegram Desktop 0.37 %, AyuGram 0.55 %" width="720">
 </p>
 
 | Client | Private Bytes | CPU, % of one core | Threads |
 |---|---:|---:|---:|
-| **Ferrogram** | **57.5 MB** | **0.25** | **11** |
+| **Veygram** | **57.5 MB** | **0.25** | **11** |
 | Telegram Desktop | 465.0 MB | 0.37 | 80 |
 | AyuGram | 541.6 MB | 0.55 | 88 |
 
@@ -74,18 +76,18 @@ The same channel post in all three clients: a 17 s clip, 1080×1080 at 60 fps, p
 in each client's media viewer, windows maximized.
 
 <p align="center">
-  <img src="docs/images/chart-video-memory.svg" alt="Memory while a video plays: Ferrogram 188.5 MB, Telegram Desktop 973.8 MB, AyuGram 1667.4 MB" width="720"><br><br>
-  <img src="docs/images/chart-video-cpu.svg" alt="CPU while a video plays: Ferrogram 6.5 %, Telegram Desktop 53.9 %, AyuGram 30.7 %" width="720">
+  <img src="docs/images/chart-video-memory.svg" alt="Memory while a video plays: Veygram 188.5 MB, Telegram Desktop 973.8 MB, AyuGram 1667.4 MB" width="720"><br><br>
+  <img src="docs/images/chart-video-cpu.svg" alt="CPU while a video plays: Veygram 6.5 %, Telegram Desktop 53.9 %, AyuGram 30.7 %" width="720">
 </p>
 
 | Client | Private Bytes, chat open | Private Bytes, playing | CPU while playing, % of one core | GPU memory after the viewer closed |
 |---|---:|---:|---:|---:|
-| **Ferrogram** | **105.5 MB** | **188.5 MB** | **6.5** | **0 MB** |
+| **Veygram** | **105.5 MB** | **188.5 MB** | **6.5** | **0 MB** |
 | Telegram Desktop | 844.8 MB | 973.8 MB | 53.9 | 191.8 MB |
 | AyuGram | 1476.3 MB | 1667.4 MB | 30.7 | 143.1 MB |
 
 <sub>Not a fully like-for-like comparison. Telegram Desktop and AyuGram autoplay videos in the
-chat feed by default, which Ferrogram does not, and that autoplay is part of their numbers; the
+chat feed by default, which Veygram does not, and that autoplay is part of their numbers; the
 clients do not show the same chat list; the clip came from each client's cache, not from the
 network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).</sub>
 
@@ -142,7 +144,7 @@ cargo run --release -p tg-app -- --demo
 cargo run --release -p tg-app
 ```
 
-The program is built as `target/release/ferrogram.exe`.
+The program is built as `target/release/veygram.exe`.
 
 ## ⚙️ How it works
 
@@ -214,7 +216,7 @@ minute, that the real client works end to end:
 ```
 
 Every push to `main` and every pull request runs separate checks in
-[GitHub Actions](https://github.com/tikD1337/ferrogram/actions):
+[GitHub Actions](https://github.com/tikD1337/veygram/actions):
 1. Lint (`cargo fmt`, `clippy -D warnings`).
 2. Unit tests.
 3. The release build.

@@ -4,7 +4,7 @@
     its process and recovers from a refused key. No account or network needed.
 
 .DESCRIPTION
-    Every scenario starts ferrogram.exe with --check, which writes a JSON account of what
+    Every scenario starts veygram.exe with --check, which writes a JSON account of what
     really happened (chats loaded, how far the video played, errors), and asserts on it.
 
     Default (local, about half a minute after the build): demo, video, voice, recovery.
@@ -18,7 +18,7 @@
 .EXAMPLE
     .\scripts\smoke.ps1 -Full
 .EXAMPLE
-    .\scripts\smoke.ps1 -Exe target\release\ferrogram.exe -Scenario video -Out smoke
+    .\scripts\smoke.ps1 -Exe target\release\veygram.exe -Scenario video -Out smoke
 #>
 [CmdletBinding()]
 param(
@@ -46,7 +46,7 @@ foreach ($name in $selected) {
 
 if (-not $Exe) {
     $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
-    $Exe = Join-Path $target 'debug\ferrogram.exe'
+    $Exe = Join-Path $target 'debug\veygram.exe'
     if (-not $NoBuild) {
         Write-Host 'Building the debug client...'
         Push-Location $root
@@ -57,14 +57,14 @@ if (-not $Exe) {
     }
 }
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
-if (-not $Out) { $Out = Join-Path ([IO.Path]::GetTempPath()) ('ferrogram-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)) }
+if (-not $Out) { $Out = Join-Path ([IO.Path]::GetTempPath()) ('veygram-smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Out = (Resolve-Path -LiteralPath $Out).Path
 
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class FerrogramSmoke {
+public static class VeygramSmoke {
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll")]
@@ -151,8 +151,8 @@ $scenarios = @{
         $probe = {
             param($process, $deadline)
             Start-Sleep -Seconds 3
-            $script:memoryRead = [FerrogramSmoke]::CanOpen([uint32]$process.Id, 0x0010)
-            $script:query = [FerrogramSmoke]::CanOpen([uint32]$process.Id, 0x1000)
+            $script:memoryRead = [VeygramSmoke]::CanOpen([uint32]$process.Id, 0x0010)
+            $script:query = [VeygramSmoke]::CanOpen([uint32]$process.Id, 0x1000)
         }
         $r = Invoke-Client 'video' @('--demo-video', '12') 60 $probe
         Assert-True (-not $r.video.failed) 'video playback reported a failure'

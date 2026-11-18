@@ -310,7 +310,7 @@ mod partial_tests {
     #[test]
     fn a_short_prefix_waits_for_the_requested_count_instead_of_signalling_eof() {
         let path =
-            std::env::temp_dir().join(format!("ferrogram-full-read-{}.bin", std::process::id()));
+            std::env::temp_dir().join(format!("veygram-full-read-{}.bin", std::process::id()));
         std::fs::write(&path, b"header-tail").unwrap();
         let mut file = StreamFile {
             id: 1,
@@ -356,7 +356,7 @@ mod partial_tests {
     #[test]
     fn available_ranges_read_real_offsets_and_preserve_the_header() {
         let path =
-            std::env::temp_dir().join(format!("ferrogram-stream-test-{}.bin", std::process::id()));
+            std::env::temp_dir().join(format!("veygram-stream-test-{}.bin", std::process::id()));
         let mut bytes = vec![0u8; 256 * 1024];
         bytes[..4].copy_from_slice(b"head");
         bytes[128 * 1024..128 * 1024 + 4].copy_from_slice(b"tail");
@@ -421,7 +421,7 @@ mod end_tests {
     #[test]
     fn read_crossing_the_end_returns_only_the_remaining_bytes() {
         let path =
-            std::env::temp_dir().join(format!("ferrogram-stream-eof-{}.bin", std::process::id()));
+            std::env::temp_dir().join(format!("veygram-stream-eof-{}.bin", std::process::id()));
         std::fs::write(&path, b"head-extra").unwrap();
         let r = Reader::new(
             StreamFile {
@@ -450,10 +450,8 @@ mod rename_tests {
     use super::*;
     #[test]
     fn open_partial_handle_survives_the_completion_rename() {
-        let partial = std::env::temp_dir().join(format!(
-            "ferrogram-stream-rename-{}.part",
-            std::process::id()
-        ));
+        let partial =
+            std::env::temp_dir().join(format!("veygram-stream-rename-{}.part", std::process::id()));
         let complete = partial.with_extension("complete");
         std::fs::write(&partial, b"header-tail").unwrap();
         let mut f = StreamFile {
@@ -491,7 +489,7 @@ mod late_path_tests {
     #[test]
     fn first_open_waits_for_a_renamed_path_update_instead_of_eof() {
         let old =
-            std::env::temp_dir().join(format!("ferrogram-stream-late-{}.part", std::process::id()));
+            std::env::temp_dir().join(format!("veygram-stream-late-{}.part", std::process::id()));
         let new = old.with_extension("complete");
         std::fs::write(&new, b"header").unwrap();
         let file = StreamFile {
@@ -576,7 +574,7 @@ mod queued_seek_tests {
     #[test]
     fn queued_read_is_cancelled_when_seek_precedes_worker_execution() {
         let path =
-            std::env::temp_dir().join(format!("ferrogram-stream-epoch-{}.bin", std::process::id()));
+            std::env::temp_dir().join(format!("veygram-stream-epoch-{}.bin", std::process::id()));
         std::fs::write(&path, b"head").unwrap();
         let r = Reader::new(
             StreamFile {
