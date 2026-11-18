@@ -320,9 +320,9 @@ impl State {
                 .fold(0u32, |n, c| n.saturating_add(c.unread_count))
         });
         window.set_window_title(if total == 0 {
-            "Ferrogram".into()
+            "Veygram".into()
         } else {
-            format!("Ferrogram ({total})").into()
+            format!("Veygram ({total})").into()
         });
         let unread = rows
             .iter()

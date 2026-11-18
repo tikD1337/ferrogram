@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn the_old_data_is_moved_next_to_itself_and_kept() {
-        let root = std::env::temp_dir().join(format!("ferrogram-recovery-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("veygram-recovery-{}", std::process::id()));
         let data = root.join("tg-rust");
         std::fs::create_dir_all(&data).expect("create data");
         std::fs::write(data.join("database-key.bin"), b"old").expect("write key");

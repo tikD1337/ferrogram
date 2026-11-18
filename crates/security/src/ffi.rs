@@ -126,7 +126,7 @@ fn wipe(bytes: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-// Storage identifier from before the rename to Ferrogram: changing it would orphan existing
+// Storage identifier from before the renames to Ferrogram and Veygram: changing it would orphan existing
 // database keys. Application constant, deliberately different from tg-rust-tpm-probe. Never
 // delete or overwrite this key: it may protect several application data directories.
 const TPM_KEY_NAME: PCWSTR = w!("tg-rust-database-wrap-v1");

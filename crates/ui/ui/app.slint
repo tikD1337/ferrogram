@@ -196,7 +196,7 @@ component Avatar inherits Rectangle {
     Image { source: root.source; width: parent.width; height: parent.height; image-fit: cover; }
 }
 export component AppWindow inherits Window {
-    in property <string> window-title: "Ferrogram";
+    in property <string> window-title: "Veygram";
     title: root.window-title;
     icon: @image-url("icon.png");
     in property <string> open-unread;
@@ -379,7 +379,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         width: 400px; spacing: 12px;
                         Text {
-                            text: "Ferrogram cannot unlock its local data on this computer: Windows refused the key that protects it. Your account is safe, and your chats are stored on Telegram's servers.";
+                            text: "Veygram cannot unlock its local data on this computer: Windows refused the key that protects it. Your account is safe, and your chats are stored on Telegram's servers.";
                             color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; horizontal-alignment: center;
                         }
                         Text {
@@ -791,7 +791,7 @@ export component AppWindow inherits Window {
                     ScaleSlider { value <=> root.scale-percent; edited => { root.scale-auto = false; } }
                     Text { width: 52px; text: root.scale-percent + "%"; color: Theme.text; font-size: Theme.type-body; horizontal-alignment: right; vertical-alignment: center; }
                 }
-                if root.action-dialog == 4: Text { text: "Ferrogram restarts to apply a new scale."; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; }
+                if root.action-dialog == 4: Text { text: "Veygram restarts to apply a new scale."; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; }
                 if root.action-dialog == 3: Text { text: "This file can run code on your computer. Open it only if you trust its source."; color: Theme.text; font-size: Theme.type-body; wrap: word-wrap; }
                 if root.action-dialog == 3: Text { text: root.file-name; color: Theme.muted; font-size: Theme.type-body; overflow: elide; }
                 if root.action-dialog == 1: Text { text: "Delete the selected message or entire album?"; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; }
@@ -892,7 +892,7 @@ component BufferSpinner inherits Rectangle {
         commands: "M8 1 A7 7 0 1 1 1 8"; }
 }
 export component MediaViewer inherits Window {
-    title: "Ferrogram - Media viewer";
+    title: "Veygram - Media viewer";
     icon: @image-url("icon.png");
     background: Theme.media-black;
     // Borderless and centred over a dimmed backdrop by the player, as in Telegram Desktop.

@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn downloaded_file_gets_exact_internet_zone_before_opening() {
         let path =
-            std::env::temp_dir().join(format!("ferrogram-zone-test-{}.txt", std::process::id()));
+            std::env::temp_dir().join(format!("veygram-zone-test-{}.txt", std::process::id()));
         std::fs::write(&path, b"synthetic test file").unwrap();
         mark_internet(&path).unwrap();
         let mut stream = path.as_os_str().to_os_string();

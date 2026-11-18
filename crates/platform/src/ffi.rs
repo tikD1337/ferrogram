@@ -181,7 +181,7 @@ pub(super) fn run(
     data.icon.uCallbackMessage = BALLOON;
     // SAFETY: predefined shared application icon; ownership stays with Windows, so no DestroyIcon.
     data.icon.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
-    wide(&mut data.icon.szTip, "Ferrogram");
+    wide(&mut data.icon.szTip, "Veygram");
     // SAFETY: initialized NOTIFYICONDATAW, live HWND and shared valid HICON.
     let installed = unsafe { Shell_NotifyIconW(NIM_ADD, &data.icon) } != 0;
     if !installed || ready.send(Ok(window as usize)).is_err() {

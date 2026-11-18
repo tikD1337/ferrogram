@@ -19,7 +19,7 @@ pub fn attach_parent_console() -> bool {
 /// UI loop; never from a UI callback.
 pub fn show_error(text: &str) {
     let text = wide(text);
-    let title = wide("Ferrogram");
+    let title = wide("Veygram");
     // SAFETY: both strings are NUL-terminated UTF-16 buffers that live until the call returns; a
     // null owner window is allowed.
     unsafe {

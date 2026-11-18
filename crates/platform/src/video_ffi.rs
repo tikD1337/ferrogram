@@ -567,7 +567,7 @@ pub(crate) fn video_window_shown(parent: isize) -> Option<bool> {
         CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, NULLREGION,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, IsWindowVisible};
-    let class: Vec<u16> = "FerrogramVideo\0".encode_utf16().collect();
+    let class: Vec<u16> = "VeygramVideo\0".encode_utf16().collect();
     // SAFETY: `parent` is a live window of this thread and `class` is NUL terminated; the
     // temporary region is created and deleted here, and the child handle is only queried.
     unsafe {
@@ -599,7 +599,7 @@ pub(crate) fn video_window_shown(parent: isize) -> Option<bool> {
 
 impl ChildWindow {
     pub(crate) fn create(parent: isize, rect: tg_core::VideoRect) -> Result<Self, Error> {
-        let class: Vec<u16> = "FerrogramVideo\0".encode_utf16().collect();
+        let class: Vec<u16> = "VeygramVideo\0".encode_utf16().collect();
         // SAFETY: the module handle of this process; null asks for the executable.
         let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let description = WNDCLASSW {
@@ -736,7 +736,7 @@ impl Backdrop {
             return Err(Error("monitor", 0));
         }
         let screen = info.rcMonitor;
-        let class: Vec<u16> = "FerrogramBackdrop\0".encode_utf16().collect();
+        let class: Vec<u16> = "VeygramBackdrop\0".encode_utf16().collect();
         // SAFETY: the module handle of this process.
         let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let description = WNDCLASSW {

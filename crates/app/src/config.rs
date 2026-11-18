@@ -173,8 +173,7 @@ mod scale_tests {
     use super::*;
     #[test]
     fn interface_scale_round_trips_and_defaults_to_auto() {
-        let directory =
-            std::env::temp_dir().join(format!("ferrogram-scale-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("veygram-scale-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         assert_eq!(interface_scale(&directory), tg_core::SCALE_AUTO);
         save_interface_scale(&directory, 120).unwrap();
