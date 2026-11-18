@@ -36,6 +36,18 @@ fn open_env() -> std::io::Result<File> {
     }
     Err(std::io::ErrorKind::NotFound.into())
 }
+/// Both values or neither: a release built with only one of them falls back to .env.
+fn built_credentials() -> (Option<String>, Option<String>) {
+    match (
+        option_env!("VEYGRAM_BUILD_API_ID"),
+        option_env!("VEYGRAM_BUILD_API_HASH"),
+    ) {
+        (Some(id), Some(hash)) if !id.is_empty() && !hash.is_empty() => {
+            (Some(id.to_owned()), Some(hash.to_owned()))
+        }
+        _ => (None, None),
+    }
+}
 pub(crate) fn credentials() -> Result<Credentials, &'static str> {
     let id = std::env::var("TG_API_ID").ok();
     let hash = std::env::var("TG_API_HASH").ok();
@@ -77,13 +89,19 @@ pub(crate) fn credentials() -> Result<Credentials, &'static str> {
             Err(_) => return Err("Could not open application credentials"),
         }
     }
+    // Public release builds carry the project's own application credentials, set at build
+    // time (scripts/package-release.ps1), as every distributed Telegram client does. The
+    // environment and .env still take precedence, so developers keep their own.
+    let (built_id, built_hash) = built_credentials();
     let id = id
         .or(file_id)
+        .or(built_id)
         .and_then(|id| id.parse::<i32>().ok())
         .filter(|id| *id > 0)
         .ok_or("Set TG_API_ID and TG_API_HASH in the environment or .env")?;
     let hash = hash
         .or(file_hash)
+        .or(built_hash)
         .filter(|hash| !hash.is_empty() && hash.len() <= 4096)
         .ok_or("Set TG_API_ID and TG_API_HASH in the environment or .env")?;
     Ok(Credentials {
