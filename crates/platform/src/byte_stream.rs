@@ -286,7 +286,7 @@ impl IMFByteStream_Impl for ByteStream_Impl {
 #[cfg(test)]
 mod async_tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     #[implement(IMFAsyncCallback)]
     struct Callback {
         sender: mpsc::SyncSender<AgileReference<IMFAsyncResult>>,
@@ -307,6 +307,8 @@ mod async_tests {
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
             MFStartup(MF_VERSION, MFSTARTUP_FULL).unwrap();
+            let timeout = Duration::from_secs(5);
+            let (report, waiting) = mpsc::channel();
             let reader = Reader::new(
                 tg_core::StreamFile {
                     id: 1,
@@ -317,26 +319,42 @@ mod async_tests {
                     completed: false,
                 },
                 1,
-                Arc::new(|_| {}),
+                Arc::new(move |status| {
+                    let _ = report.send(status);
+                }),
             );
+            let mut buffer = [0u8; 64];
             let source = Source::new(reader.clone()).unwrap();
             let (tx, rx) = mpsc::sync_channel(1);
             let callback: IMFAsyncCallback = Callback { sender: tx }.into();
-            let mut buffer = [0u8; 64];
-            let start = Instant::now();
-            source
-                .stream
-                .BeginRead(&mut buffer, &callback, None)
-                .unwrap();
-            assert!(start.elapsed() < Duration::from_millis(100));
-            assert!(rx.recv_timeout(Duration::from_millis(25)).is_err());
+
+            // Unblock a synchronous regression so the test fails instead of hanging.
+            let (returned, begin_done) = mpsc::channel();
+            let watchdog = std::thread::spawn(move || {
+                if begin_done.recv_timeout(timeout).is_ok() {
+                    return true;
+                }
+                reader.close();
+                false
+            });
+            let begin = source.stream.BeginRead(&mut buffer, &callback, None);
+            let _ = returned.send(());
+            assert!(
+                watchdog.join().unwrap(),
+                "BeginRead blocked while media data was unavailable"
+            );
+            begin.unwrap();
+
+            let status = waiting.recv_timeout(timeout).unwrap();
+            assert!(status.waiting);
+            assert_eq!(status.needed, Some(0));
+            assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
             source.stream.Close().unwrap();
-            let result = rx
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .resolve()
-                .unwrap();
-            assert!(source.stream.EndRead(&result).is_err());
+            let result = rx.recv_timeout(timeout).unwrap().resolve().unwrap();
+            assert_eq!(
+                source.stream.EndRead(&result).unwrap_err().code(),
+                MF_E_OPERATION_CANCELLED
+            );
             drop(result);
             drop(callback);
             drop(source);
