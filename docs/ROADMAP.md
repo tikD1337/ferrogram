@@ -56,29 +56,317 @@ Done 2026-11-16, used daily on a live account since then.
 
 ## Stage 4. Features
 
-Ordered by frequency of use:
+The target is feature parity with the stable Windows Telegram Desktop, with the same RAM and CPU
+discipline as stages 0–3. Work is grouped below, roughly by frequency of use; the heavy subsystems
+come after the everyday messaging flows. Completed foundations are recorded separately from the
+remaining work. An unchecked item can include an existing prototype that still needs integration
+or live-account verification.
 
-1. Images and documents, downloading and sending. Downloading and viewing done (photos 2026-11-16,
-   files 2026-11-17); sending media is not done.
-2. Replies, forwarding, editing, deletion. Done 2026-11-16.
-3. Windows notifications, tray, counters. Notifications and counters done 2026-11-16; a tray mode
-   that unloads the UI is not done.
-4. Reactions, stickers, GIF. Static stickers done 2026-11-17; reactions, animated stickers and GIF
-   are not done.
-5. Search.
-6. Voice messages. Playback done 2026-11-17; recording is not done.
-7. Folders, archive, settings, themes.
-8. Multiple accounts.
-9. Master password, Windows Hello, automatic locking.
-10. Privacy settings, secret chats.
-11. Calls — a separate decision after everything else.
+Parity is checked against the [official Desktop changelog](https://telegramdesktop.github.io/tdesktop/changelog/)
+and the corresponding stable release, initially 7.4.4 (2026-11-13). Record the compared version,
+account tier and server availability when testing; refresh the checklist before a release. A
+phone-only feature is not a Desktop parity requirement. A missing TDLib capability stays an
+explicit gap, with an upgrade or integration task; it is not silently omitted.
 
-Each feature comes with a measurement of what it adds to memory and CPU usage.
+**Rules for every subsection**
+
+- Each feature comes with before and after measurements of memory and CPU usage, including
+  first use, active use, closing it and returning to idle or the tray. Follow [BENCHMARKS.md](BENCHMARKS.md).
+- No polling or busy-waiting. Coalesce incoming updates; redraw only changed visible content.
+  Animation stops outside the viewport or in an inactive window; recording and playback run only
+  while explicitly active. Heavy work stays off the UI thread.
+- History, search results and member lists are paged and virtualized. Caches are bounded in bytes,
+  queues and concurrent work are bounded, and closing a view cancels work that is no longer needed.
+- Audio, video, calls and browser components start on demand and release their resources when
+  finished. Count helper processes and GPU allocations as part of Veygram's cost.
+- Protocol correctness, security, accessibility and usable interactions are part of completion.
+  Lower usage obtained by dropping functionality does not meet the goal.
+
+### 4.1. Media & Creation
+
+Photos and files can be downloaded and viewed (2026-11-16/17); text sending works. Video streaming,
+voice playback and round video playback are present; recording and media sending remain.
+
+- [ ] Send photos, videos, documents and albums from the file picker, drag-and-drop and clipboard;
+      preview, reorder, remove items and edit captions before sending. Preserve album grouping
+      across page boundaries and verify receiving albums on a live account.
+- [ ] Compressed photos and videos, HD where available, and uncompressed originals sent as files;
+      respect server limits and avoid re-encoding an unchanged original.
+- [ ] Image and video editing: crop, rotate, draw, add text or stickers, trim, mute, choose quality
+      and cover; GIF creation and editing. Process large inputs incrementally with bounded buffers.
+- [ ] Upload queue with progress, cancellation, retry, failed-send recovery and per-file captions;
+      folders/file sets as archives, without reading whole files into RAM.
+- [ ] Voice note recording: microphone choice, level/waveform, hold or lock, pause, preview, trim,
+      discard and send. Video note recording: camera choice, preview and the same send/cancel flow.
+      Release capture devices and encoding workers on completion, cancellation or failure.
+- [ ] Scheduled and repeating messages, send when online where supported, Saved Messages reminders,
+      scheduled-message list with edit/reschedule/delete/send now, and silent messages.
+- [ ] Media and caption spoilers, self-destructing and view-once media where Desktop supports them;
+      enforce viewing, saving and forwarding restrictions in previews, notifications and caches.
+- [ ] Contact cards, locations, live-location viewing and other Desktop-supported attachments;
+      unsupported content must explain itself rather than disappear.
+
+**Exit:** all send paths, cancellation and reconnect recovery work on a live account; large files
+and repeated recordings stay within measured memory and CPU budgets.
+
+### 4.2. Chat Interactivity
+
+Replies, reply quotes, forwarding, editing and deletion were added 2026-11-16.
+
+- [ ] Polls and quizzes: create, vote, retract where allowed, show results/voters, stop a poll,
+      anonymous or public voting, multiple answers and quiz explanations; current Desktop poll
+      options, media and permissions, including clear read-only states.
+- [ ] Reactions: picker, quick reaction, counts and reactors, custom/Premium and paid reactions
+      where available; respect chat limits and animate only visible reactions.
+- [ ] Pin/unpin messages, notification choice, pinned-message bar and paged pinned-message list;
+      navigate among pins in chats, topics and Saved Messages.
+- [ ] Server drafts: text, formatting and reply target, synchronized between devices and restored
+      per chat/topic. Coalesce edits before saving; recover correctly after reconnect or conflict.
+- [ ] Multi-select messages and albums for copy, forward, delete and save, with keyboard/range
+      selection and permission-aware actions; copy selected text across messages.
+- [ ] Message links, jump to replies/originals, reply navigation history, read receipts and unread
+      mentions/reactions; typing and recording status without permanent UI timers.
+- [ ] Collaborative checklists, message translation and transcription where available; preserve
+      entitlement checks, errors and the original content.
+- [ ] Auto-delete timers, protected content and paid-message confirmation where required; joining,
+      muting or restricted-chat bars replace an unusable composer.
+
+**Exit:** actions and their server updates stay consistent across devices, including denied rights,
+deleted messages and reconnects; message selection does not retain evicted history pages.
+
+### 4.3. Channels, Groups & Moderation
+
+- [ ] User, group and channel profiles: avatars, description, online/member/subscriber counts,
+      members, shared media and links; sender avatars, admin titles, member tags and verified marks.
+- [ ] Create and edit groups/channels; join/leave, invite links and QR codes, join requests,
+      permissions, ownership transfer, public usernames and linked discussion groups.
+- [ ] Topics/forums: create, edit, close, reopen, delete, pin and search topics; per-topic history,
+      drafts, unread state and notifications, including General and bot topics where supported.
+- [ ] Channel comments and discussion threads: reply counts, open the linked thread, reply,
+      moderate and return to the originating post without losing the scroll anchor.
+- [ ] Admin tools: promote/demote, granular rights, ban/restrict/unban, remove messages, report spam,
+      slow mode, anti-spam settings, recent actions/admin log and member search.
+- [ ] Channel publishing: signatures and send-as identity, scheduled/suggested posts, direct
+      messages to channels, statistics, boosts, giveaways and monetization where available.
+- [ ] Communities, welcome messages and ephemeral group messages as supported by the reference
+      Desktop release. Check permissions and lifecycle semantics before calling them complete.
+
+**Exit:** member and admin flows work with ordinary and administrator accounts; large forums,
+member lists, logs and statistics load by page and do not grow resident history without limit.
+
+### 4.4. Bots & Mini Apps
+
+- [ ] Inline keyboards and callbacks, reply keyboards, force reply, keyboard removal, request
+      contact/location/chat actions and button URL confirmation.
+- [ ] Bot command suggestions, command/menu button, start parameters and deep links; inline
+      queries with paged results, cancellation, switch-to-chat and sending the selected result.
+- [ ] Bot payments/invoices, Telegram login/URL authorization, attachment-menu bots and relevant
+      permission prompts; show failures and account/paid-feature restrictions clearly.
+- [ ] Mini Apps through WebView2, loaded only when explicitly opened, with Telegram's bridge,
+      theme/viewport events, navigation, downloads and camera/microphone/clipboard permissions.
+      Isolate browser storage per account; never expose another account's authorization data.
+- [ ] Release Mini App views, browser processes and associated workers after close or tray unload;
+      no prewarmed browser or hidden background app. Measure the whole process tree and test
+      recovery from a missing runtime or a crashed browser component.
+- [ ] Current Desktop bot content, including rich messages and HTML widgets, with the same
+      isolation and lifetime rules for content that requires web rendering.
+- [ ] Business/automated-account tools: quick replies, greeting/away messages, business links,
+      hours/location and connected bots, where supported by Desktop and the account.
+
+WebView2 is a narrow parity exception to the no-WebView rule in [ARCHITECTURE.md](ARCHITECTURE.md),
+not a replacement for the native UI. Reconcile that architecture decision and review the security
+boundary before implementation; this roadmap does not claim that integration is already accepted
+or measured.
+
+**Exit:** bot interactions and Mini App lifecycle/permission tests pass; unopened Mini Apps add no
+browser process, and closing one returns to a measured idle budget with no browser left running.
+
+### 4.5. Media Viewer & Player
+
+Media Foundation playback and bounded partial-file video streaming are already present; details
+and the remaining round-video memory cost are in the dated progress notes below.
+
+- [ ] Fullscreen lightbox: previous/next, thumbnails, keyboard navigation, pan/zoom, rotation,
+      save/copy/open externally and jump to the source message. Decode the visible image at the
+      needed resolution with a small bounded neighbour prefetch; do not retain the whole album.
+- [ ] Video controls: play/pause, seeking and buffering ranges, volume/mute, playback speed,
+      fullscreen, picture-in-picture (PiP), quality selection and timestamp links.
+- [ ] Inline GIF/animation and muted short-video playback, round-video seeking/streaming and
+      floating playback; autoplay controls and no invisible decoding when inactive.
+- [ ] Audio/music player: metadata, playlist/queue, previous/next, repeat/shuffle, seek, volume,
+      speed and resume position; voice waveform, unread/listened state and continuous playback.
+- [ ] Windows system media controls and media keys; coordinate playback so opening another
+      player or a call does not leave competing audio or orphaned decoding workers.
+- [ ] Shared media tabs for photos/videos, files, links, music, voice, GIFs and applicable profile
+      content, with paged search, selection, download and source-message navigation.
+- [ ] Instant View and supported document previews, including text recognition where available;
+      perform parsing/recognition on demand and keep decoded pages and results bounded.
+
+**Exit:** playback, seek, PiP and close work during partial downloads and failures; repeated open/
+close cycles release player resources, and scrolling shared media reaches a memory plateau.
+
+### 4.6. Stickers, Custom Emoji & Rich Text
+
+Static WebP stickers work (2026-11-17); animated TGS/WebM currently have still-frame fallbacks.
+
+- [ ] TGS (Lottie) and WebM sticker animation, animated emoji and message effects; decode frames
+      on demand, with bounded frame buffers and a shared scheduler for visible animations.
+- [ ] Emoji/sticker/GIF panel: installed packs, favourites, recent items, search, saved GIFs,
+      pack previews, install/remove/reorder and supported sticker/custom-emoji creation tools.
+- [ ] Inline custom emoji in text, captions, names and status, preserving shaping, RTL, selection
+      and accessibility. Finish the optional local emoji set and freely licensed public fallback.
+- [ ] Formatting toolbar, context menu and hotkeys: bold, italic, underline, strike, monospace,
+      code blocks, quotes/expandable quotes, spoilers, links and mentions; preserve entities on
+      copy/paste, edit and forward, with undo/redo and IME support.
+- [ ] Rich-message editor and rendering for tables, lists, tasks, formulas, media/file blocks and
+      buttons where Desktop supports them; optional server-assisted editing must be explicit.
+- [ ] Clickable URLs, mentions, hashtags, `t.me`/`tg://` links and configurable link previews:
+      choose/remove previews, size and position; native in-app navigation with safe external links.
+
+**Exit:** message entities round-trip correctly; text stays selectable and accessible, and packs
+and animated content have measured byte budgets with zero inactive animation work.
+
+### 4.7. Navigation & Organization
+
+- [ ] Main menu: account header, My Profile, Saved Messages, contacts, calls, settings, night mode,
+      create group/channel and other applicable Desktop entries, each opening a working screen.
+- [ ] Chat folders: create/edit/delete/reorder, include/exclude rules, counters, shared folder
+      links and limits; archive/unarchive, archive visibility, pin/unpin and mark read/unread.
+- [ ] Global search for chats, contacts, bots/apps and public posts; in-chat/topic search by text,
+      sender, date and media type, result navigation and recent searches. Cancel stale queries
+      and page results rather than building a complete local search index in RAM.
+- [ ] Contacts: add/edit/delete, share cards, blocked users, birthdays and notes where supported;
+      Saved Messages organization, tags and saved music.
+- [ ] Chat list details: own-message prefix/read checks, pins, mute/type/verified marks and drafts;
+      keyboard chat switching, back stack, unread navigation and restored chat/scroll state.
+- [ ] Stories: view, publish/edit where Desktop supports it, reply/react, privacy, archive,
+      profile albums and live stories; reuse bounded media pipelines and stop hidden playback.
+- [ ] Premium, Stars and gifts: entitlement-aware screens, balances/history, gifting, collectible
+      gifts/collections/status and supported purchases, auctions and paid content. Track newer
+      Desktop financial surfaces separately with a security review and explicit confirmations.
+- [ ] Account and chat data export (HTML/JSON and selected media), with cancellation and streamed
+      output; do not materialize the full history in memory or bypass protected-content rules.
+
+**Exit:** navigation reaches every supported screen and returns to the same context; searching,
+exporting and browsing large accounts keep bounded state and do not block the UI.
+
+### 4.8. Multi-Account
+
+- [ ] Add, sign in, remove and quickly switch between 3–4 accounts, following the server's
+      ordinary/Premium limits; QR/phone/2FA flows, logout and expired-session recovery per account.
+- [ ] Separate TDLib sessions, encrypted databases, keys, drafts, download paths, settings and
+      Mini App storage; account identity is explicit on notifications, send/payment actions and calls.
+- [ ] Per-account unread badges, notifications and background updates; notification activation
+      switches to the correct account/chat, and pending sends stay with their originating account.
+- [ ] Reuse one visible UI, evict inactive view models and divide a global byte budget across
+      accounts rather than multiplying media caches. Keep background engines event-driven and
+      measure their unavoidable per-account cost; no dropped updates to make switching cheaper.
+
+**Exit:** 3–4 account switching is fast in measured cold/warm scenarios, no state crosses accounts,
+and total foreground/tray costs are compared with the same accounts in Telegram Desktop.
+
+### 4.9. Calls
+
+Calls remain a later stage of feature work, but are required for parity. TDLib alone does not
+provide the media stack; validate a compatible tgcalls/WebRTC integration before choosing it.
+
+- [ ] One-to-one voice/video: incoming/outgoing call UI, ringing notifications, answer/reject/end,
+      mute, camera toggle, device selection, volume, reconnect and encryption verification.
+- [ ] Screen/window sharing, with system audio where supported, selection preview and clear stop
+      controls; handle device loss and camera/microphone permissions.
+- [ ] Group calls, group voice/video chats and channel live streams: join/create/schedule, invite
+      links, participants, speaker/listener roles, raise hand, moderation, recording and reactions/
+      comments where supported, with paged participants and bounded visible video streams.
+- [ ] Load the stack only on an incoming or outgoing call event, bound jitter/frame buffers and
+      encoding workers, adapt to bandwidth, and release devices, workers and library resources
+      when the call ends. A call or deliberate screen share may continue in the tray; its cost
+      must be measured separately from an idle tray client.
+
+**Exit:** interoperability with official clients, reconnect and device/lifecycle tests pass; idle
+startup has no call workers, and call CPU, memory and post-call cleanup are measured.
+
+### 4.10. Settings & Customization
+
+- [ ] Profile editor: name, bio, username, phone, photo/video avatar, birthday and emoji status;
+      account deletion/logout flows and profile visibility consistent with server permissions.
+- [ ] Privacy rules and exceptions: phone, last seen/online, photos, forwards, calls, invitations,
+      messages, stories and blocked users; auto-delete and account inactivity settings.
+- [ ] Two-step verification (2FA): enable/change/remove password, recovery email and recovery;
+      active sessions and web authorizations, device details and individual/all-other revocation.
+      Passkey sign-in and management where supported; fix QR-to-phone sign-in switching.
+- [ ] Master password, Windows Hello research and automatic UI/full locking, following
+      [SECURITY.md](SECURITY.md) and the security work below; do not weaken TPM + DPAPI protection.
+- [ ] Notifications: global/per-chat/per-account mute, previews, sounds, exceptions, quiet periods
+      and locked-screen privacy; respect Windows notification and Focus settings.
+- [ ] Data/storage: auto-download and autoplay rules, download destination, network usage, byte
+      limits and retention for disk caches, per-chat/media cleanup, progress and cancellation.
+      Keep disk and decoded-RAM budgets distinct; cleanup must preserve sessions and unsent work.
+- [ ] Connection: SOCKS5 (including authentication) and MTProto proxies, system proxy and other
+      Desktop-supported proxy modes, import/share, connectivity status and switching/rotation;
+      respect call routing support and never put proxy credentials in logs.
+- [ ] Light/night/OLED and custom themes, theme import/export/editor, wallpaper/chat appearance,
+      accent, font size, existing interface scaling, language, spellcheck, send-key choice and
+      shortcuts; reduced motion and high contrast without permanent animation timers.
+- [ ] Settings search, persistence and migration, with safe reset flows; document downloaded-file
+      cache protection and cleanup-on-lock behaviour before implementing it.
+
+Secret chats were requested earlier, but are beyond Telegram Desktop parity. Keep them as an
+explicit later extension, gated on TDLib interoperability and the security model, without blocking
+the Desktop comparison or weakening protection of existing sessions.
+
+**Exit:** settings survive restart and account switching, server rules match another client, and
+cache/lock/session operations have recovery tests without data loss.
+
+### 4.11. Windows Platform & Performance
+
+Notifications and unread counters were added 2026-11-16; deep tray unloading is still open.
+
+- [ ] Tray lifecycle: close/minimize preferences, menu, badges and restore; destroy UI components,
+      textures, fonts, decoded media and inactive Mini Apps. Keep notifications and server updates
+      in the engine, and rebuild only the current viewport on restore. Active audio/calls have
+      explicit lifetime rules; an idle tray must not retain their workers.
+- [ ] Taskbar unread badge, download/upload progress and call attention; notification quick reply
+      and deep-link activation, single-instance routing and launch-to-tray.
+- [ ] Opt-in auto-start, sleep/resume, network changes and session shutdown; restore drafts and
+      context, handle multiple monitors, mixed DPI, window placement and Windows 10/11 behaviour.
+- [ ] Installer/uninstaller and portable updates, code signing and automatic updates with verified
+      manifests/packages, atomic replacement and rollback; configurable update checks and no
+      permanently running updater. Verify packaged TDLib hashes and runtime dependencies.
+- [ ] Accessibility (a11y): keyboard-only operation, focus order, screen-reader/UI Automation text
+      for custom-rendered messages, names/roles/actions for controls, high contrast, reduced motion,
+      IME, text selection and copy at all supported scales.
+- [ ] Automated benchmarks against Telegram Desktop: all [BENCHMARKS.md](BENCHMARKS.md) scenarios,
+      plus media upload/playback, animated stickers, search, Mini Apps, calls, 3–4 accounts and
+      repeated tray/restore cycles. Use identical data/settings/hardware; record client versions,
+      build commits, cold/warm state and raw samples.
+- [ ] Track private bytes/working set, CPU per core, threads/handles, GPU and helper-process memory,
+      startup/restore latency and scrolling frame times (including 4K); test four-hour memory
+      growth and cancellation/close loops. Set measured regression budgets and automate their
+      enforcement; do not invent targets or claim savings from an incomplete feature set.
+
+**Exit:** everyday Windows integration and accessibility are verified, tray memory returns to its
+measured engine-only budget, and equivalent feature scenarios retain the memory and CPU advantage
+over Telegram Desktop. Regressions block completion until measured and resolved.
+
+**Stage exit:** the parity checklist is verified against the recorded stable Desktop version on
+live accounts, all subsection exits are met, remaining platform/server/tier restrictions are
+documented, and the stage 3 performance suite still passes with the full feature set enabled.
 
 ## Stage 5. Systematic optimization
 
 Profiling (WPR/WPA, ETW, allocation counters), finding bottlenecks, fixing them with
-before and after measurements. Build TDLib from source at a pinned commit. Prepare for release.
+before and after measurements. Build TDLib from source at a pinned commit. Optimization continues
+through stage 4; this final pass verifies the complete client rather than a reduced feature demo.
+
+- [ ] Resolve measured bottlenecks, including the round-video frame-copy cost, 4K scrolling and
+      subsystem unload behaviour; repeat equivalent Desktop benchmarks after each material change.
+- [ ] Complete dependency audits, packaging/hash checks, clean-machine installation/update tests,
+      session-key recovery/copy tests and the release security work recorded below.
+- [ ] Recheck the stable Desktop changelog and close newly found parity gaps; publish supported
+      features, known restrictions and reproducible benchmark results with the release.
+
+**Exit:** the complete client meets the functional and resource gates, release/security checks
+pass, and the published claims match the tested build and recorded measurements.
 
 ## User requirement (2026-11-16): seamless history
 
@@ -214,9 +502,11 @@ Out of scope, as decided in SECURITY.md: a Chrome-style SYSTEM service for appli
 and anti-debugging or obfuscation. Malware with administrator or kernel rights (T4) cannot be
 stopped by any user-mode client.
 
-## Documented but not yet planned (2026-11-17)
+## Cross-document follow-ups (recorded 2026-11-17)
 
-Promises and open items found in the other documents that had no place in this plan.
+Promises and open items found in the other documents, now tracked by stage 4 and stage 5 above.
+The details below retain the original constraints and verification work; they are not additional
+claims of completed functionality.
 
 **Text and emoji** (ARCHITECTURE.md, sections 3 and 7)
 
