@@ -76,6 +76,12 @@ Do this only if profiling shows that JSON is a bottleneck.
 
 Electron, Tauri and any WebView are excluded: they conflict with the project's goal.
 
+**Open question: Mini Apps.** Should Veygram allow a narrowly scoped web runtime for Mini Apps?
+WebView2 is a candidate. The current exclusion remains in effect pending an approved architecture
+decision. Evaluate account isolation, permissions, and measured RAM and CPU at startup, during use
+and after closing. If the proposal is rejected, record Mini Apps as a parity gap.
+See [ROADMAP.md](ROADMAP.md#44-bots--mini-apps).
+
 ### Decision: Slint, with a validation prototype
 
 Slint is the only candidate with a stable API, event-driven rendering, built-in

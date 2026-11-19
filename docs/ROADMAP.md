@@ -162,24 +162,27 @@ member lists, logs and statistics load by page and do not grow resident history 
       queries with paged results, cancellation, switch-to-chat and sending the selected result.
 - [ ] Bot payments/invoices, Telegram login/URL authorization, attachment-menu bots and relevant
       permission prompts; show failures and account/paid-feature restrictions clearly.
-- [ ] Mini Apps through WebView2, loaded only when explicitly opened, with Telegram's bridge,
-      theme/viewport events, navigation, downloads and camera/microphone/clipboard permissions.
-      Isolate browser storage per account; never expose another account's authorization data.
-- [ ] Release Mini App views, browser processes and associated workers after close or tray unload;
-      no prewarmed browser or hidden background app. Measure the whole process tree and test
-      recovery from a missing runtime or a crashed browser component.
-- [ ] Current Desktop bot content, including rich messages and HTML widgets, with the same
-      isolation and lifetime rules for content that requires web rendering.
+- [ ] Mini Apps, pending an approved architecture decision on embedding a web runtime. If approved,
+      load the runtime only when explicitly opened and support Telegram's bridge, theme/viewport
+      events, navigation, downloads and camera/microphone/clipboard permissions. Keep storage and
+      authorization data isolated per account.
+- [ ] If approved, release Mini App views, runtime processes and associated workers after close or
+      tray unload. Measure the whole process tree and test recovery from a missing or crashed
+      runtime.
+- [ ] Current Desktop bot content, including rich messages. HTML widgets that require a web runtime
+      follow the same approval, isolation and lifetime rules as Mini Apps.
 - [ ] Business/automated-account tools: quick replies, greeting/away messages, business links,
       hours/location and connected bots, where supported by Desktop and the account.
 
-WebView2 is a narrow parity exception to the no-WebView rule in [ARCHITECTURE.md](ARCHITECTURE.md),
-not a replacement for the native UI. Reconcile that architecture decision and review the security
-boundary before implementation; this roadmap does not claim that integration is already accepted
-or measured.
+WebView2 is a candidate for a narrowly scoped runtime. The current WebView exclusion remains in
+effect pending the decision. Evaluate isolation, security and measured resource costs before
+seeking approval. See [ARCHITECTURE.md](ARCHITECTURE.md#3-graphical-interface).
 
-**Exit:** bot interactions and Mini App lifecycle/permission tests pass; unopened Mini Apps add no
-browser process, and closing one returns to a measured idle budget with no browser left running.
+**Exit:** bot interactions pass and the architecture decision is recorded. If a runtime is
+approved, Mini App lifecycle and permission tests pass, startup adds no runtime process, and
+closing the last Mini App releases its runtime resources and returns to the measured idle budget.
+If the proposal is rejected, record Mini Apps and any affected bot content as explicit parity
+gaps in the roadmap and release notes.
 
 ### 4.5. Media Viewer & Player
 
@@ -322,7 +325,7 @@ cache/lock/session operations have recovery tests without data loss.
 Notifications and unread counters were added 2026-11-16; deep tray unloading is still open.
 
 - [ ] Tray lifecycle: close/minimize preferences, menu, badges and restore; destroy UI components,
-      textures, fonts, decoded media and inactive Mini Apps. Keep notifications and server updates
+      textures, fonts, decoded media and any inactive Mini Apps. Keep notifications and server updates
       in the engine, and rebuild only the current viewport on restore. Active audio/calls have
       explicit lifetime rules; an idle tray must not retain their workers.
 - [ ] Taskbar unread badge, download/upload progress and call attention; notification quick reply
@@ -336,9 +339,9 @@ Notifications and unread counters were added 2026-11-16; deep tray unloading is 
       for custom-rendered messages, names/roles/actions for controls, high contrast, reduced motion,
       IME, text selection and copy at all supported scales.
 - [ ] Automated benchmarks against Telegram Desktop: all [BENCHMARKS.md](BENCHMARKS.md) scenarios,
-      plus media upload/playback, animated stickers, search, Mini Apps, calls, 3–4 accounts and
-      repeated tray/restore cycles. Use identical data/settings/hardware; record client versions,
-      build commits, cold/warm state and raw samples.
+      plus media upload/playback, animated stickers, search, calls, 3–4 accounts and repeated
+      tray/restore cycles. Include Mini Apps if the runtime is approved and shipped. Use identical
+      data/settings/hardware and record client versions, build commits, cold/warm state and raw samples.
 - [ ] Track private bytes/working set, CPU per core, threads/handles, GPU and helper-process memory,
       startup/restore latency and scrolling frame times (including 4K); test four-hour memory
       growth and cancellation/close loops. Set measured regression budgets and automate their
@@ -349,23 +352,24 @@ measured engine-only budget, and equivalent feature scenarios retain the memory 
 over Telegram Desktop. Regressions block completion until measured and resolved.
 
 **Stage exit:** the parity checklist is verified against the recorded stable Desktop version on
-live accounts, all subsection exits are met, remaining platform/server/tier restrictions are
-documented, and the stage 3 performance suite still passes with the full feature set enabled.
+live accounts and all subsection exits are met, including either recorded outcome in section 4.4.
+Document remaining restrictions and parity gaps. The stage 3 performance suite must still pass
+with all supported features enabled, using equivalent workloads.
 
 ## Stage 5. Systematic optimization
 
 Profiling (WPR/WPA, ETW, allocation counters), finding bottlenecks, fixing them with
 before and after measurements. Build TDLib from source at a pinned commit. Optimization continues
-through stage 4; this final pass verifies the complete client rather than a reduced feature demo.
+through stage 4. This final pass verifies the release build with all supported features enabled.
 
 - [ ] Resolve measured bottlenecks, including the round-video frame-copy cost, 4K scrolling and
       subsystem unload behaviour; repeat equivalent Desktop benchmarks after each material change.
 - [ ] Complete dependency audits, packaging/hash checks, clean-machine installation/update tests,
       session-key recovery/copy tests and the release security work recorded below.
-- [ ] Recheck the stable Desktop changelog and close newly found parity gaps; publish supported
-      features, known restrictions and reproducible benchmark results with the release.
+- [ ] Recheck the stable Desktop changelog and close newly found parity gaps within the approved
+      scope. Publish supported features, remaining gaps and reproducible benchmarks with the release.
 
-**Exit:** the complete client meets the functional and resource gates, release/security checks
+**Exit:** the release build meets the functional and resource gates, release/security checks
 pass, and the published claims match the tested build and recorded measurements.
 
 ## User requirement (2026-11-16): seamless history
