@@ -693,7 +693,7 @@ impl State {
                     window.set_error("Could not download the video.".into());
                 } else { self.download_failed(window,id); }
             },
-            Event::FileOperationFailed=>window.set_error("Could not open or locate the file. Internet-zone marking is required before opening.".into()),
+            Event::FileOperationFailed=>window.set_error("Could not open the link or file, or locate the file. Downloaded files require internet-zone marking.".into()),
             Event::VideoState(state) if state.stream.is_some()=>self.stream_status(window,state.stream.unwrap_or_default()),
             Event::VideoState(state) if state.audio_token.is_some()=>self.voice_state(window,state),
             Event::VideoState(state) if state.dismissed => self.close_video(window),
@@ -950,6 +950,19 @@ impl Ui {
         actions::bind(&window, &state);
         attachments::bind(&window, &state);
         scale::bind(&window, &state);
+        let s = state.clone();
+        window.on_text_link(move |key, x, y| s.feed.link_at(&key, x, y).unwrap_or_default().into());
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_text_link_clicked(move |key, x, y| {
+            if let Some(w) = weak.upgrade()
+                && !w.get_blocked()
+                && w.get_action_dialog() == 0
+                && let Some(target) = s.feed.link_at(&key, x, y)
+            {
+                s.file_request(&w, tg_core::FileRequest::OpenUrl(target));
+            }
+        });
         let weak = window.as_weak();
         let s = state.clone();
         window.on_media_ready(move || {

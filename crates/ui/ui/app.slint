@@ -87,6 +87,38 @@ export struct MessageRow {
     // 0 none, 1 sent, 2 read, -1 sending, -2 failed.
     checks: int,
 }
+// Hit testing is a pure binding to pointer coordinates: no timers or reshaping on hover.
+component MessageText inherits Image {
+    in property <bool> enabled: true;
+    pure callback target-at(x: length, y: length) -> string;
+    callback activate(x: length, y: length);
+    callback context-menu(x: length, y: length);
+    TouchArea {
+        property <string> pressed-target;
+        property <bool> dragged;
+        enabled: root.enabled;
+        mouse-cursor: self.has-hover && root.target-at(self.mouse-x, self.mouse-y) != "" ? MouseCursor.pointer : MouseCursor.default;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                self.pressed-target = root.target-at(self.mouse-x, self.mouse-y);
+                self.dragged = false;
+            }
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                root.context-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+            if event.kind == PointerEventKind.cancel { self.pressed-target = ""; }
+        }
+        moved => {
+            if abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px { self.dragged = true; }
+        }
+        clicked => {
+            if !self.dragged && self.pressed-target != "" && self.pressed-target == root.target-at(self.mouse-x, self.mouse-y) {
+                root.activate(self.mouse-x, self.mouse-y);
+            }
+            self.pressed-target = "";
+        }
+    }
+}
 component Action inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
@@ -238,6 +270,8 @@ export component AppWindow inherits Window {
     callback wheel(delta: length);
     callback chat-viewport-changed();
     callback media-ready();
+    pure callback text-link(key: string, x: length, y: length) -> string;
+    callback text-link-clicked(key: string, x: length, y: length);
     changed chat-y => { root.chat-viewport-changed(); }
     changed chat-height => { root.chat-viewport-changed(); }
     in-out property <string> auth-input;
@@ -519,9 +553,12 @@ export component AppWindow inherits Window {
                                     x: (parent.width - self.width) / 2;
                                     y: msg.bubble-y; width: msg.bubble-width; height: msg.bubble-height;
                                     border-radius: min(Theme.radius-bubble, self.height / 2); background: Theme.date;
-                                    Image {
+                                    MessageText {
                                         x: (parent.width - self.width) / 2; y: msg.text-y;
                                         width: msg.text-width; height: msg.text-height; source: msg.rendered;
+                                        enabled: !root.blocked && root.action-dialog == 0;
+                                        target-at(x, y) => { root.text-link(msg.key, x, y) }
+                                        activate(x, y) => { root.text-link-clicked(msg.key, x, y); }
                                     }
                                 }
                                 Rectangle {
@@ -647,7 +684,15 @@ export component AppWindow inherits Window {
                                         viewbox-width: 100; viewbox-height: 100; fill: transparent; stroke: Theme.accent; stroke-width: 1.5px;
                                         commands: msg.round-progress;
                                     }
-                                    if msg.text-height > 0px: Image { x: 10px; y: msg.text-y; width: msg.text-width; height: msg.text-height; source: msg.rendered; }
+                                    if msg.text-height > 0px: MessageText {
+                                        x: 10px; y: msg.text-y; width: msg.text-width; height: msg.text-height; source: msg.rendered;
+                                        enabled: !root.blocked && root.action-dialog == 0;
+                                        target-at(x, y) => { root.text-link(msg.key, x, y) }
+                                        activate(x, y) => { root.text-link-clicked(msg.key, x, y); }
+                                        context-menu(x, y) => {
+                                            root.open-menu(msg.key, msg.can-reply, msg.can-edit, msg.can-forward, msg.can-delete, msg.file-available, x, y);
+                                        }
+                                    }
                                     if msg.time-over-media: Rectangle {
                                         x: msg.time-x - 6px; y: msg.time-y - 2px; height: 18px; border-radius: self.height / 2; background: Theme.scrim;
                                         width: msg.time-label-width + (msg.checks != 0 ? 18px : 0px) + 12px;

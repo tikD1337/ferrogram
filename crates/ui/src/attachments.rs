@@ -337,7 +337,7 @@ impl State {
         }
         self.feed.notify_message(id);
     }
-    fn file_request(&self, w: &AppWindow, request: FileRequest) {
+    pub(super) fn file_request(&self, w: &AppWindow, request: FileRequest) {
         let result = self.attachments.files.borrow().as_ref().map_or_else(
             || {
                 Err(CommandError {

@@ -44,6 +44,8 @@ pub struct Sticker {
 pub enum FileRequest {
     Open(PathBuf),
     ShowInFolder(PathBuf),
+    /// An explicitly clicked URL, validated again by the shell worker.
+    OpenUrl(String),
 }
 /// The Telegram waveform is packed low bit first, with five bits per sample.
 pub fn decode_waveform(packed: &[u8]) -> Result<Vec<u8>, &'static str> {

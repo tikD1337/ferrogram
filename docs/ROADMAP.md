@@ -169,6 +169,18 @@ work, so the client eventually covers what Telegram Desktop offers:
 
 Next: reactions, pinning, message links and selection; switching from QR back to phone sign-in.
 
+## Progress (2026-11-19): clickable message text
+
+- URLs, text URLs and mentions use hit rectangles from the rendered Parley layout, including
+  wrapped and RTL text and album captions. Only the text itself shows the pointer cursor;
+  dragging, hidden spoilers and blank space do not activate links.
+- Explicit HTTP, HTTPS, Telegram and mailto protocols are preserved; bare web addresses use
+  HTTPS and mentions open `https://t.me/<username>`. The existing bounded shell worker opens
+  targets with `ShellExecuteW`, off the UI thread, and validates targets again before opening.
+  Unsupported schemes and local paths are rejected. In-client Telegram navigation is still planned.
+- Link maps belong only to visible rows, are bounded to 256 KiB per row and count toward the
+  existing 96 MiB viewport budget. Hover is event-driven; no polling or periodic timers were added.
+
 ## Progress (2026-11-18): name and first public release
 
 - The client is now called Veygram (it was Ferrogram, one letter away from ferogram, an existing

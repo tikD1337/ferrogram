@@ -15,6 +15,7 @@ pub(crate) fn run(receiver: mpsc::Receiver<FileRequest>, report: impl Fn(bool)) 
             match request {
                 FileRequest::Open(path) => open(&path),
                 FileRequest::ShowInFolder(path) => reveal(&path),
+                FileRequest::OpenUrl(url) => open_url(&url),
             }
         } else {
             Err(Error("shell COM initialization", 0))
@@ -43,6 +44,15 @@ fn open(path: &Path) -> Result<(), Error> {
     // Fail closed if the provenance mark cannot be written. No executable bypass or shell command.
     crate::files::mark_internet(path).map_err(|_| Error("internet zone marking", 0))?;
     let path = wide(path)?;
+    shell_open(&path)
+}
+fn open_url(target: &str) -> Result<(), Error> {
+    let target = tg_core::external_url(target).ok_or(Error("external URL", 0))?;
+    let mut wide: Vec<u16> = target.encode_utf16().collect();
+    wide.push(0);
+    shell_open(&wide)
+}
+fn shell_open(path: &[u16]) -> Result<(), Error> {
     let verb = [111u16, 112, 101, 110, 0];
     // SAFETY: both UTF-16 buffers are terminated and alive for this synchronous call; all optional
     // arguments are null. This runs only for an explicit UI click/confirmed executable action.
@@ -59,7 +69,7 @@ fn open(path: &Path) -> Result<(), Error> {
     if result > 32 {
         Ok(())
     } else {
-        Err(Error("open downloaded file", result as u32))
+        Err(Error("shell open", result as u32))
     }
 }
 fn reveal(path: &Path) -> Result<(), Error> {
@@ -79,5 +89,20 @@ fn reveal(path: &Path) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error("show downloaded file", status as u32))
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    #[test]
+    fn shell_boundary_rejects_unsafe_targets_before_calling_windows() {
+        for target in [
+            "file:///C:/a.exe",
+            "shell:AppsFolder",
+            "javascript:alert(1)",
+            "https://a\0b",
+        ] {
+            assert!(super::open_url(target).is_err());
+        }
     }
 }

@@ -4362,6 +4362,9 @@ dependencies = [
 [[package]]
 name = "tg-core"
 version = "0.1.0"
+dependencies = [
+ "url",
+]
 
 [[package]]
 name = "tg-platform"
