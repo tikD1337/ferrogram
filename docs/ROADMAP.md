@@ -85,11 +85,17 @@ explicit gap, with an upgrade or integration task; it is not silently omitted.
 ### 4.1. Media & Creation
 
 Photos and files can be downloaded and viewed (2026-11-16/17); text sending works. Video streaming,
-voice playback and round video playback are present; recording and media sending remain.
+voice playback and round video playback are present; recording and most media sending remain.
+Since 2026-11-20 a single photo or document can be sent from the file picker (paperclip) or pasted
+from the clipboard (Ctrl+V), with a preview, an optional caption, "send as file" for photos and
+cancellation before sending. TDLib reads the file from its local path; Veygram never loads it.
 
 - [ ] Send photos, videos, documents and albums from the file picker, drag-and-drop and clipboard;
       preview, reorder, remove items and edit captions before sending. Preserve album grouping
       across page boundaries and verify receiving albums on a live account.
+      Done: one photo or document from the picker or a pasted clipboard image, with preview,
+      plain-text caption and cancel. Remaining: videos, albums, multiple files, drag-and-drop,
+      reordering and formatted captions.
 - [ ] Compressed photos and videos, HD where available, and uncompressed originals sent as files;
       respect server limits and avoid re-encoding an unchanged original.
 - [ ] Image and video editing: crop, rotate, draw, add text or stickers, trim, mute, choose quality

@@ -283,6 +283,20 @@ export component AppWindow inherits Window {
 
     callback load-chats();
     callback send();
+    callback attach-file();
+    callback paste-image() -> bool;
+    callback outgoing-ready();
+    callback cancel-outgoing();
+    callback send-outgoing();
+    in property <bool> attachment-busy;
+    in property <bool> outgoing-open;
+    in property <bool> outgoing-photo;
+    in property <bool> outgoing-has-preview;
+    in property <image> outgoing-preview;
+    in property <string> outgoing-name;
+    in property <string> outgoing-size;
+    in-out property <string> outgoing-caption;
+    in-out property <bool> outgoing-as-file;
     callback logout();
     callback demo-toggle();
     callback clear-highlight();
@@ -706,17 +720,26 @@ export component AppWindow inherits Window {
                         composer := TextInput {
                             in property <bool> focus-request: root.composer-focus;
                             changed focus-request => { self.focus(); }
-                            x: 18px; y: 15px; width: parent.width - 18px - 60px; height: parent.height - 30px;
+                            x: 54px; y: 15px; width: parent.width - 54px - 60px; height: parent.height - 30px;
                             text <=> root.draft; color: Theme.text; font-size: Theme.type-body; wrap: word-wrap;
                             selection-background-color: Theme.selected; selection-foreground-color: Theme.on-strong;
                             enabled: !root.blocked;
                             key-pressed(event) => {
+                                if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste-image() { return accept; }
                                 if event.text == Key.Escape { root.cancel-action(); return accept; }
                                 if event.text == Key.Return && !event.modifiers.shift { root.send(); return accept; }
                                 return reject;
                             }
                         }
-                        if root.draft == "": Text { x: 18px; y: 15px; height: 20px; text: "Write a message..."; color: Theme.muted; font-size: Theme.type-body; }
+                        Rectangle {
+                            x: 6px; y: parent.height - 46px; width: 40px; height: 40px; border-radius: 20px;
+                            background: attach-touch.has-hover ? Theme.hover : transparent;
+                            Path { x: 9px; y: 8px; width: 22px; height: 24px; viewbox-width: 24; viewbox-height: 24;
+                                fill: transparent; stroke: root.attachment-busy || root.editing ? Theme.icon-idle : Theme.muted; stroke-width: 1.8px;
+                                commands: "M8 13 L15 6 C18 3 22 7 19 10 L10 19 C5 24 -1 18 4 13 L13 4 M7 16 L16 7"; }
+                            attach-touch := TouchArea { enabled: !root.blocked && !root.editing && !root.attachment-busy; clicked => { root.attach-file(); } }
+                        }
+                        if root.draft == "": Text { x: 54px; y: 15px; height: 20px; text: "Write a message..."; color: Theme.muted; font-size: Theme.type-body; }
                         Rectangle {
                             x: parent.width - 52px; y: parent.height - 46px; width: 40px; height: 40px; border-radius: self.height / 2;
                             background: send-touch.has-hover && root.draft != "" ? Theme.hover : transparent;
@@ -828,6 +851,38 @@ export component AppWindow inherits Window {
     }
 
 
+    if root.outgoing-open: Rectangle {
+        background: Theme.scrim;
+        TouchArea { }
+        FocusScope {
+            width: parent.width; height: parent.height;
+            init => { self.focus(); }
+            capture-key-pressed(event) => {
+                if event.text == Key.Escape { root.cancel-outgoing(); return accept; }
+                return reject;
+            }
+        Rectangle {
+            width: min(420px, root.width - 32px); height: root.outgoing-photo ? 530px : 300px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.panel; border-radius: Theme.radius-panel;
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: root.outgoing-photo && !root.outgoing-as-file ? "Send photo" : "Send file"; color: Theme.text; font-size: Theme.type-dialog; font-weight: 600; }
+                if root.outgoing-photo && root.outgoing-has-preview: Image { source: root.outgoing-preview; height: 200px; image-fit: contain; }
+                if root.outgoing-photo && !root.outgoing-has-preview: Text { height: 200px; text: "Preview unavailable. The original photo can still be sent."; color: Theme.muted; font-size: Theme.type-body; wrap: word-wrap; vertical-alignment: center; horizontal-alignment: center; }
+                Text { text: root.outgoing-name; color: Theme.text; font-size: Theme.type-body; overflow: elide; }
+                Text { text: root.outgoing-size; color: Theme.muted; font-size: Theme.type-small; }
+                if root.outgoing-photo: Link { text: root.outgoing-as-file ? "Send as photo" : "Send as file (original)"; clicked => { root.outgoing-as-file = !root.outgoing-as-file; } }
+                Input { text <=> root.outgoing-caption; }
+                Text { text: "Caption (optional, up to 1024 characters)"; color: Theme.muted; font-size: Theme.type-small; }
+                HorizontalLayout { alignment: end; spacing: 12px;
+                    Link { text: "Cancel"; width: 100px; clicked => { root.cancel-outgoing(); } }
+                    Action { text: "Send"; width: 100px; enabled: !root.blocked; clicked => { root.send-outgoing(); } }
+                }
+            }
+        }
+        }
+    }
     if root.menu-open: TouchArea {
         x: 0px; y: 0px; width: root.width; height: root.height;
         clicked => { root.menu-open = false; }

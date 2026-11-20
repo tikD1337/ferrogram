@@ -344,6 +344,10 @@ impl Demo {
                 self.remember(message.clone())?;
                 sink.post(Event::NewMessage(message));
             }
+            // Demo never uploads: release the source file (and any pasted temporary) at once.
+            Command::SendPhoto { path, .. } | Command::SendDocument { path, .. } => {
+                sink.post(Event::LocalFileSendFinished(path));
+            }
             _ => {}
         }
         Ok(())

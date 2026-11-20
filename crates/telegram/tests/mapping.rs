@@ -11,6 +11,78 @@ fn decode(decoder: &mut Decoder, json: &str) -> Vec<Event> {
 }
 
 #[test]
+fn outgoing_documents_are_displayed_and_release_sources_only_after_terminal_updates() {
+    use serde_json::json;
+    let mut decoder = Decoder::default();
+    let pending = json!({"@type":"message","id":-100,"chat_id":7,"date":1,"is_outgoing":true,
+        "sending_state":{"@type":"messageSendingStatePending"},
+        "@extra":{"command":"send_document","local_path":"C:/source.zip"},
+        "content":{"@type":"messageDocument","caption":{"text":"Caption","entities":[]},
+            "document":{"file_name":"source.zip","document":{"id":42,"size":4096,"local":{}}}}});
+    let events = decode(&mut decoder, &pending.to_string());
+    assert!(
+        matches!(&events[..], [Event::NewMessage(m)] if m.send_state == tg_core::SendState::Pending && m.text == "Caption")
+    );
+    let done = json!({"@type":"updateMessageSendSucceeded","old_message_id":-100,"message":{
+        "id":1048576,"chat_id":7,"date":1,"is_outgoing":true,"content":pending["content"]}});
+    let events = decode(&mut decoder, &done.to_string());
+    assert!(events.contains(&Event::LocalFileSendFinished("C:/source.zip".into())));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e,Event::MessageUpdated {old_id,..} if old_id.0 == -100))
+    );
+}
+
+#[test]
+fn upload_errors_keep_command_identity_and_release_the_source() {
+    for (tag, kind) in [
+        ("send_photo", tg_core::CommandKind::SendPhoto),
+        ("send_document", tg_core::CommandKind::SendDocument),
+    ] {
+        let events = decode(
+            &mut Decoder::default(),
+            &serde_json::json!({"@type":"error","code":400,"message":"private path",
+            "@extra":{"command":tag,"local_path":"C:/paste.png"}})
+            .to_string(),
+        );
+        assert_eq!(
+            events[0],
+            Event::LocalFileSendFinished("C:/paste.png".into())
+        );
+        assert!(
+            matches!(&events[1],Event::CommandFailed{command,error} if *command == kind && !error.message.contains("private path"))
+        );
+    }
+}
+
+#[test]
+fn upload_completion_can_arrive_before_the_tagged_pending_response() {
+    use serde_json::json;
+    let mut decoder = Decoder::default();
+    let content = json!({"@type":"messageText","text":{"text":"caption","entities":[]}});
+    decode(
+        &mut decoder,
+        &json!({"@type":"updateMessageSendSucceeded","old_message_id":-1,
+        "message":{"id":1048576,"chat_id":7,"date":1,"is_outgoing":true,"content":content}})
+        .to_string(),
+    );
+    let events = decode(
+        &mut decoder,
+        &json!({"@type":"message","id":-1,"chat_id":7,"date":1,"is_outgoing":true,
+        "sending_state":{"@type":"messageSendingStatePending"},"content":content,
+        "@extra":{"command":"send_photo","local_path":"C:/paste.png"}})
+        .to_string(),
+    );
+    assert!(events.contains(&Event::LocalFileSendFinished("C:/paste.png".into())));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::NewMessage(_)))
+    );
+}
+
+#[test]
 fn qr_confirmation_exposes_a_link_without_leaking_it_in_debug() {
     let events = decode(
         &mut Decoder::default(),

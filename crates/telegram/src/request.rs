@@ -8,6 +8,16 @@ use crate::mapping::{MAX_LINK_BYTES, MAX_TEXT_BYTES, PAGE_SIZE, error};
 
 pub(crate) fn encode(command: Command) -> Result<Value, CommandError> {
     let (mut request, tag) = match command {
+        Command::SendPhoto {
+            chat,
+            path,
+            caption,
+        } => return upload(chat, path, caption, true),
+        Command::SendDocument {
+            chat,
+            path,
+            caption,
+        } => return upload(chat, path, caption, false),
         Command::DownloadRange {
             file,
             offset,
@@ -234,6 +244,36 @@ fn check_input(value: &str, limit: usize) -> Result<(), CommandError> {
     Ok(())
 }
 
+fn upload(
+    chat: ChatId,
+    path: std::path::PathBuf,
+    caption: Option<String>,
+    photo: bool,
+) -> Result<Value, CommandError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| error(-2, "The file path is not valid Unicode."))?;
+    check_input(path, 4096)?;
+    let caption = caption.unwrap_or_default();
+    if path.contains('\0') || caption.chars().count() > 1024 {
+        return Err(error(
+            -2,
+            "Invalid path or caption exceeds 1024 characters.",
+        ));
+    }
+    let mut content = json!({"@type":if photo {"inputMessagePhoto"} else {"inputMessageDocument"},
+        "caption":{"@type":"formattedText","text":caption,"entities":[]}});
+    content[if photo { "photo" } else { "document" }] =
+        json!({"@type":"inputFileLocal","path":path});
+    if !photo {
+        content["disable_content_type_detection"] = json!(true);
+    }
+    Ok(
+        json!({"@type":"sendMessage","chat_id":chat.0,"input_message_content":content,
+        "@extra":{"command":if photo {"send_photo"} else {"send_document"},"local_path":path}}),
+    )
+}
+
 pub(crate) fn serialize(value: &Value) -> Result<CString, CommandError> {
     // Requests contain a fixed number of fields and at most 64 KiB of input text.
     // Escaping can expand text sixfold; the serialized request is at most 400 KiB.
@@ -248,6 +288,81 @@ pub(crate) fn serialize(value: &Value) -> Result<CString, CommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uploads_use_local_paths_and_optional_plain_captions() {
+        for (command, kind, field, tag, caption) in [
+            (
+                Command::SendPhoto {
+                    chat: ChatId(7),
+                    path: "C:/Фото/image.png".into(),
+                    caption: Some("Подпись 📷".into()),
+                },
+                "inputMessagePhoto",
+                "photo",
+                "send_photo",
+                "Подпись 📷",
+            ),
+            (
+                Command::SendDocument {
+                    chat: ChatId(7),
+                    path: "C:/Фото/archive.zip".into(),
+                    caption: None,
+                },
+                "inputMessageDocument",
+                "document",
+                "send_document",
+                "",
+            ),
+        ] {
+            let request = encode(command).unwrap();
+            assert_eq!(request["@type"], "sendMessage");
+            assert_eq!(request["chat_id"], 7);
+            assert_eq!(request["@extra"]["command"], tag);
+            let content = &request["input_message_content"];
+            assert_eq!(content["@type"], kind);
+            assert_eq!(content[field]["@type"], "inputFileLocal");
+            assert!(
+                content[field]["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("C:/Фото/")
+            );
+            assert_eq!(content["caption"]["text"], caption);
+            assert_eq!(content["caption"]["entities"], json!([]));
+            assert!(serialize(&request).unwrap().as_bytes().len() < 2048);
+        }
+    }
+
+    #[test]
+    fn upload_paths_and_captions_are_bounded_before_dispatch() {
+        for path in ["", "bad\0path", &"a".repeat(4097)] {
+            assert!(
+                encode(Command::SendPhoto {
+                    chat: ChatId(7),
+                    path: path.into(),
+                    caption: None
+                })
+                .is_err()
+            );
+        }
+        assert!(
+            encode(Command::SendDocument {
+                chat: ChatId(7),
+                path: "file.zip".into(),
+                caption: Some("x".repeat(1025))
+            })
+            .is_err()
+        );
+        assert!(
+            encode(Command::SendPhoto {
+                chat: ChatId(7),
+                path: "photo.png".into(),
+                caption: Some("😀".repeat(1024))
+            })
+            .is_ok()
+        );
+    }
 
     #[test]
     fn media_requests_are_asynchronous_and_cancellable() {

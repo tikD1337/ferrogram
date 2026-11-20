@@ -193,6 +193,7 @@ fn event_bytes(e: &Event) -> usize {
         Event::AuthStateChanged(tg_core::AuthState::WaitOtherDevice { link }) => link.capacity(),
         Event::AuthStateChanged(tg_core::AuthState::WaitPassword { hint }) => hint.capacity(),
         Event::FileUpdated(file) => file_bytes(file),
+        Event::LocalFileSendFinished(path) => path.as_os_str().len() * 2,
         Event::CommandFailed { error, .. } => error.message.capacity(),
         Event::ReplyResolved { reply, .. } => reply
             .as_ref()

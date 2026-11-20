@@ -12,6 +12,9 @@ mod byte_stream;
 #[allow(unsafe_code)]
 mod files_ffi;
 #[allow(unsafe_code)]
+mod picker;
+pub use picker::{clipboard_has_image, pick_file, read_clipboard_image};
+#[allow(unsafe_code)]
 mod round_frames;
 #[allow(unsafe_code)]
 mod scale;
