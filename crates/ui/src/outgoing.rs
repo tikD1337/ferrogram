@@ -108,7 +108,12 @@ fn plain_path(path: PathBuf) -> PathBuf {
         return path;
     };
     match text.strip_prefix(r"\\?\") {
-        Some(rest) if rest.len() < 260 && rest.as_bytes().get(1) == Some(&b':') => rest.into(),
+        // MAX_PATH counts UTF-16 units, not UTF-8 bytes.
+        Some(rest)
+            if rest.encode_utf16().count() < 260 && rest.as_bytes().get(1) == Some(&b':') =>
+        {
+            rest.into()
+        }
         _ => path,
     }
 }
@@ -512,6 +517,12 @@ mod tests {
         assert_eq!(
             plain_path(r"\\?\C:\Photos\a.png".into()),
             PathBuf::from(r"C:\Photos\a.png")
+        );
+        // 137 UTF-16 units but 267 UTF-8 bytes: still a short path.
+        let unicode = format!(r"C:\{}.png", "é".repeat(130));
+        assert_eq!(
+            plain_path(format!(r"\\?\{unicode}").into()),
+            PathBuf::from(&unicode)
         );
         for kept in [
             r"\\?\UNC\server\share\a.png".to_string(),
