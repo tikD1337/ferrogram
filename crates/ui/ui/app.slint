@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 // Colours follow Telegram Desktop's night theme; OLED mode turns surfaces black.
 export global Theme {
     in-out property <bool> oled: false;
@@ -314,6 +314,8 @@ export component AppWindow inherits Window {
     callback round-return();
     callback confirm-file();
     in property <string> file-name;
+    callback confirm-link();
+    in property <string> link-target;
 
     callback load-chats();
     callback send();
@@ -364,7 +366,7 @@ export component AppWindow inherits Window {
     in property <bool> edit-saving;
     in-out property <length> destination-y;
     changed destination-y => { root.chat-viewport-changed(); }
-    // 0 closed, 1 delete confirmation, 2 forward destination.
+    // 0 closed, 1 delete, 2 forward, 3 open file, 4 interface scale, 5 open link.
     in-out property <int> action-dialog;
     changed action-dialog => { root.viewport-changed(); }
     in property <bool> can-revoke;
@@ -817,12 +819,22 @@ export component AppWindow inherits Window {
             key-pressed(event) => { if event.text == Key.Escape { root.cancel-action(); return accept; } return reject; }
         }
         Rectangle {
-            width: 420px; height: root.action-dialog == 1 ? 220px : root.action-dialog == 3 ? 260px : root.action-dialog == 4 ? 250px : 440px;
+            width: 420px; height: root.action-dialog == 1 ? 220px : root.action-dialog == 3 || root.action-dialog == 5 ? 260px : root.action-dialog == 4 ? 250px : 440px;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             border-radius: Theme.radius-panel; background: Theme.panel;
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Text { text: root.action-dialog == 1 ? "Delete message?" : root.action-dialog == 3 ? "Open this file?" : root.action-dialog == 4 ? "Interface scale" : "Forward to"; color: Theme.text; font-size: Theme.type-dialog; font-weight: 600; }
+                Text { text: root.action-dialog == 1 ? "Delete message?" : root.action-dialog == 3 ? "Open this file?" : root.action-dialog == 4 ? "Interface scale" : root.action-dialog == 5 ? "Open this link?" : "Forward to"; color: Theme.text; font-size: Theme.type-dialog; font-weight: 600; }
+                if root.action-dialog == 5: link-scroll := ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    content-width: self.visible-width;
+                    content-height: link-label.preferred-height;
+                    link-label := Text {
+                        x: 0px; y: 0px; width: link-scroll.visible-width - 16px;
+                        height: self.preferred-height;
+                        text: root.link-target; color: Theme.text; font-size: Theme.type-body; wrap: char-wrap;
+                    }
+                }
                 if root.action-dialog == 4: Rectangle {
                     height: 38px;
                     Rectangle { x: 0px; y: 9px; width: 18px; height: 18px; border-radius: Theme.radius-small; border-width: 1px; border-color: Theme.accent; background: root.scale-auto ? Theme.badge : transparent;
@@ -861,6 +873,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout { alignment: end; spacing: 12px;
                     Link { text: "Cancel"; width: 100px; clicked => { root.cancel-action(); } }
                     if root.action-dialog == 3: Action { text: "Open"; width: 100px; clicked => { root.confirm-file(); } }
+                    if root.action-dialog == 5: Action { text: "Open"; width: 100px; enabled: !root.blocked && root.link-target != ""; clicked => { root.confirm-link(); } }
                     if root.action-dialog == 1: Action { text: "Delete"; width: 100px; clicked => { root.confirm-delete(); } }
                     if root.action-dialog == 4: Action {
                         text: "Restart now"; width: 130px;

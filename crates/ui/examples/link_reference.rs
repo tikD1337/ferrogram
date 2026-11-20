@@ -5,6 +5,7 @@ use slint::{
     Model,
     platform::{PointerEventButton, WindowEvent},
 };
+const LINK_LABEL: &str = "https://mybank.example";
 
 fn pointer(w: &AppWindow, event: WindowEvent) {
     w.window().dispatch_event(event);
@@ -64,11 +65,28 @@ fn verify(
         return Err("Hover resolved the wrong target".into());
     }
     click(w, p, PointerEventButton::Left);
-    if requests.borrow().as_slice() != [tg_core::FileRequest::OpenUrl(expected.into())] {
-        return Err(format!(
-            "Real click did not dispatch the URL: {:?}",
-            requests.borrow()
-        ));
+    if !requests.borrow().is_empty() {
+        return Err("Disguised link opened without confirmation".into());
+    }
+    if w.get_action_dialog() != OPEN_LINK_DIALOG || w.get_link_target().as_str() != expected {
+        return Err("Confirmation did not show the real normalized target".into());
+    }
+    w.invoke_cancel_action();
+    w.invoke_confirm_link();
+    if w.get_action_dialog() != 0
+        || !w.get_link_target().is_empty()
+        || !requests.borrow().is_empty()
+    {
+        return Err("Cancelling did not discard the pending link".into());
+    }
+    click(w, p, PointerEventButton::Left);
+    w.invoke_confirm_link();
+    w.invoke_confirm_link();
+    if w.get_action_dialog() != 0
+        || !w.get_link_target().is_empty()
+        || requests.borrow().as_slice() != [tg_core::FileRequest::OpenUrl(expected.into())]
+    {
+        return Err("Confirmation did not dispatch the displayed URL exactly once".into());
     }
     requests.borrow_mut().clear();
     pointer(
@@ -130,6 +148,19 @@ fn verify(
         return Err("Invalidated row retained its link".into());
     }
     state.refresh(w);
+    state.feed.history.borrow_mut().messages[0].entities[0].kind = tg_core::EntityKind::TextUrl {
+        target: "HTTPS://mybank.example/".into(),
+    };
+    state.feed.invalidate();
+    state.refresh(w);
+    click(w, p, PointerEventButton::Left);
+    if w.get_action_dialog() != 0
+        || requests.borrow().as_slice() != [tg_core::FileRequest::OpenUrl(format!("{LINK_LABEL}/"))]
+    {
+        return Err(
+            "A text link with a matching normalized label prompted or failed to open".into(),
+        );
+    }
     pointer(w, WindowEvent::PointerMoved { position: plain });
     pointer(w, WindowEvent::PointerMoved { position: p });
     Ok(())
@@ -146,18 +177,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     ui.window.set_ready(true);
     ui.window.set_chat_open(true);
-    let text = "plain text before linked label and after";
+    let text = format!("plain text before {LINK_LABEL} and after");
     ui.state.feed.history.borrow_mut().messages = vec![tg_core::Message {
         id: MessageId(1048576),
         chat: tg_core::ChatId(1),
         date: 0,
         outgoing: false,
-        text: text.into(),
+        text,
         entities: vec![tg_core::TextEntity {
             offset: 18,
-            length: 12,
+            length: LINK_LABEL.len() as u32,
             kind: tg_core::EntityKind::TextUrl {
-                target: "http://example.org/actual".into(),
+                target: "HTTP://example.org/actual".into(),
             },
         }],
         photo: None,

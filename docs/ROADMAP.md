@@ -178,6 +178,7 @@ Next: reactions, pinning, message links and selection; switching from QR back to
   HTTPS and mentions open `https://t.me/<username>`. The existing bounded shell worker opens
   targets with `ShellExecuteW`, off the UI thread, and validates targets again before opening.
   Unsupported schemes and local paths are rejected. In-client Telegram navigation is still planned.
+- Text links whose labels hide their destination show the normalized URL and require confirmation.
 - Link maps belong only to visible rows, are bounded to 256 KiB per row and count toward the
   existing 96 MiB viewport budget. Hover is event-driven; no polling or periodic timers were added.
 

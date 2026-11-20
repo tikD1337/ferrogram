@@ -58,6 +58,13 @@ pub struct Options {
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
 type VideoFn = Box<dyn Fn(VideoRequest) -> Result<(), CommandError>>;
+const OPEN_LINK_DIALOG: i32 = 5;
+
+fn close_link_confirmation(window: &AppWindow) {
+    window.set_link_target(Default::default());
+    window.set_action_dialog(0);
+}
+
 struct State {
     check: check::Check,
     attachments: attachments::Attachments,
@@ -951,7 +958,11 @@ impl Ui {
         attachments::bind(&window, &state);
         scale::bind(&window, &state);
         let s = state.clone();
-        window.on_text_link(move |key, x, y| s.feed.link_at(&key, x, y).unwrap_or_default().into());
+        window.on_text_link(move |key, x, y| {
+            s.feed
+                .link_at(&key, x, y)
+                .map_or_else(Default::default, |target| target.url.into())
+        });
         let weak = window.as_weak();
         let s = state.clone();
         window.on_text_link_clicked(move |key, x, y| {
@@ -960,7 +971,26 @@ impl Ui {
                 && w.get_action_dialog() == 0
                 && let Some(target) = s.feed.link_at(&key, x, y)
             {
-                s.file_request(&w, tg_core::FileRequest::OpenUrl(target));
+                if target.hidden {
+                    w.set_link_target(target.url.into());
+                    w.set_action_dialog(OPEN_LINK_DIALOG);
+                } else {
+                    s.file_request(&w, tg_core::FileRequest::OpenUrl(target.url));
+                }
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_confirm_link(move || {
+            if let Some(w) = weak.upgrade()
+                && !w.get_blocked()
+                && w.get_action_dialog() == OPEN_LINK_DIALOG
+            {
+                let target = w.get_link_target();
+                close_link_confirmation(&w);
+                if !target.is_empty() {
+                    s.file_request(&w, tg_core::FileRequest::OpenUrl(target.to_string()));
+                }
             }
         });
         let weak = window.as_weak();

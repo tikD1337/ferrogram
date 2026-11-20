@@ -25,8 +25,13 @@ pub(crate) struct Links {
     entries: Vec<Link>,
 }
 struct Link {
-    target: String,
+    target: LinkTarget,
     rects: Vec<[f32; 4]>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LinkTarget {
+    pub url: String,
+    pub hidden: bool,
 }
 impl Links {
     fn from_layout(
@@ -77,9 +82,11 @@ impl Links {
                     .map(|name| format!("https://t.me/{name}")),
                 _ => None,
             };
-            let Some(target) = target else {
+            let Some(url) = target else {
                 continue;
             };
+            let hidden = matches!(entity.kind, EntityKind::TextUrl { .. })
+                && tg_core::external_url(label).as_deref() != Some(url.as_str());
             let start = Cursor::from_byte_index(layout, range.start, Affinity::Downstream);
             let end = Cursor::from_byte_index(layout, range.end, Affinity::Upstream);
             let rects: Vec<_> = Selection::new(start, end)
@@ -96,20 +103,23 @@ impl Links {
                 .collect();
             // Charge double entry size for Vec growth; targets and geometry are byte-bounded.
             let cost = 2 * std::mem::size_of::<Link>()
-                + target.capacity()
+                + url.capacity()
                 + rects.capacity() * std::mem::size_of::<[f32; 4]>();
             if bytes + cost > MAX_LINK_BYTES {
                 break;
             }
             if !rects.is_empty() {
                 bytes += cost;
-                links.entries.push(Link { target, rects });
+                links.entries.push(Link {
+                    target: LinkTarget { url, hidden },
+                    rects,
+                });
             }
         }
         links
     }
     /// Physical image coordinates, with half-open bounds so blank space never snaps to text.
-    pub fn link_at(&self, (x, y): (f32, f32)) -> Option<&str> {
+    pub fn link_at(&self, (x, y): (f32, f32)) -> Option<&LinkTarget> {
         self.entries
             .iter()
             .find(|link| {
@@ -117,7 +127,7 @@ impl Links {
                     .iter()
                     .any(|&[x0, y0, x1, y1]| x >= x0 && x < x1 && y >= y0 && y < y1)
             })
-            .map(|link| link.target.as_str())
+            .map(|link| &link.target)
     }
     pub fn bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<Link>()
@@ -125,7 +135,8 @@ impl Links {
                 .entries
                 .iter()
                 .map(|link| {
-                    link.target.capacity() + link.rects.capacity() * std::mem::size_of::<[f32; 4]>()
+                    link.target.url.capacity()
+                        + link.rects.capacity() * std::mem::size_of::<[f32; 4]>()
                 })
                 .sum::<usize>()
     }
@@ -653,7 +664,10 @@ mod tests {
                 assert!(link.rects.len() > 1);
                 for &[x0, y0, x1, y1] in &link.rects {
                     assert_eq!(
-                        rendered.links.link_at(((x0 + x1) / 2.0, (y0 + y1) / 2.0)),
+                        rendered
+                            .links
+                            .link_at(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+                            .map(|target| target.url.as_str()),
                         Some("https://example.org/long/path/that/wraps")
                     );
                     assert!(
@@ -678,19 +692,39 @@ mod tests {
     #[test]
     fn hidden_links_invalid_ranges_mentions_and_text_urls() {
         let mut engine = TextEngine::new(None);
-        for (text, kind, target) in [
-            ("@telegram", EntityKind::Mention, "https://t.me/telegram"),
+        for (text, kind, target, hidden) in [
+            (
+                "@telegram",
+                EntityKind::Mention,
+                "https://t.me/telegram",
+                false,
+            ),
             (
                 "label",
                 EntityKind::TextUrl {
                     target: "http://example.org/actual".into(),
                 },
                 "http://example.org/actual",
+                true,
+            ),
+            (
+                "example.org",
+                EntityKind::TextUrl {
+                    target: "HTTPS://example.org".into(),
+                },
+                "https://example.org/",
+                false,
             ),
         ] {
             let mut message = linked_message(text, 0..text.len(), kind);
             let rendered = engine.render(&message, 1.0, 200.0);
-            assert_eq!(rendered.links.entries[0].target, target);
+            assert_eq!(
+                rendered.links.entries[0].target,
+                LinkTarget {
+                    url: target.into(),
+                    hidden
+                }
+            );
             message.entities.push(tg_core::TextEntity {
                 offset: 1,
                 length: 2,

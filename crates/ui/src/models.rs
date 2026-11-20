@@ -837,15 +837,12 @@ impl Feed {
         )
     }
     /// Coordinates relative to the displayed text image, in logical pixels.
-    pub fn link_at(&self, key: &str, x: f32, y: f32) -> Option<String> {
+    pub fn link_at(&self, key: &str, x: f32, y: f32) -> Option<crate::text::LinkTarget> {
         let id = MessageId(key.parse().ok()?);
         let visible = self.visible.borrow();
         let cached = visible.iter().find(|row| row.key == id)?;
         let scale = self.scale.get().clamp(0.5, 4.0);
-        cached
-            .links
-            .link_at((x * scale, y * scale))
-            .map(str::to_owned)
+        cached.links.link_at((x * scale, y * scale)).cloned()
     }
     fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
         if !in_grid(&messages[range.start]) || range.len() == MAX_ALBUM {
@@ -1094,7 +1091,8 @@ mod feed_tests {
                     })
                 })
                 .unwrap();
-            assert_eq!(hit.2, "https://example.org/");
+            assert_eq!(hit.2.url, "https://example.org/");
+            assert!(!hit.2.hidden);
             assert_eq!(feed.link_at(&key, -1.0, -1.0), None);
             assert_eq!(feed.link_at("not an ID", hit.0, hit.1), None);
             feed.invalidate_message(MessageId(2 * 1048576));
