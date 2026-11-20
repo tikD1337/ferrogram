@@ -619,7 +619,10 @@ impl Decoder {
                         .is_some();
                     if already_finished {
                         emit(Event::LocalFileSendFinished(path));
-                        return Ok(()); // Do not replace the final message with a stale pending ID.
+                        // The terminal update already delivered the final message (the UI
+                        // appends it when the pending one was never shown); a pending copy
+                        // here would reintroduce a stale ID.
+                        return Ok(());
                     }
                     if value["sending_state"]["@type"] == "messageSendingStatePending" {
                         // A saturated tracker retains source files in the UI until shutdown.

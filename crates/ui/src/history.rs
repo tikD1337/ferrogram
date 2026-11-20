@@ -153,7 +153,8 @@ impl History {
             .position(|m| Some(m.id) == old || m.id == message.id)
         {
             self.messages[index] = message;
-        } else if old.is_none() && self.at_tail() {
+        } else if self.at_tail() {
+            // A send result can arrive before its pending message was shown; append it then.
             if self.messages.len() == MAX_MESSAGES && !follow_tail {
                 self.newer = self.messages.last().map(|m| m.id);
                 return;
@@ -327,6 +328,21 @@ mod tests {
         h.request_older();
         h.page(ChatId(1), id(50), None, vec![], false);
         assert_eq!(h.older, None);
+    }
+    #[test]
+    fn send_result_without_a_shown_pending_message_is_appended_at_the_tail() {
+        let mut h = History::default();
+        h.open(ChatId(1));
+        h.page(ChatId(1), id(0), None, vec![message(10)], false);
+        h.upsert(Some(MessageId(-5)), message(11), false);
+        assert_eq!(
+            h.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [id(10), id(11)]
+        );
+        // Away from the tail the newer page is loaded later instead.
+        h.newer = Some(id(11));
+        h.upsert(Some(MessageId(-6)), message(12), false);
+        assert_eq!(h.messages.len(), 2);
     }
 }
 
