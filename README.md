@@ -23,7 +23,7 @@ Written in Rust. About 8× less memory than Telegram Desktop, measured.
 
 > [!IMPORTANT]
 > **Veygram is an unofficial client in early development.** It is not affiliated with or endorsed
-> by Telegram. It uses the official [TDLib](https://github.com/tdlib/td) library and your own API
+> by Telegram. It uses the official [TDLib](https://github.com/tdlib/td) library and built-in API
 > credentials. Expect missing features and rough edges.
 
 ## 📸 Screenshots
