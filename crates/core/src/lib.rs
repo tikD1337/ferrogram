@@ -14,7 +14,9 @@ pub use attachments::{
 mod command;
 mod event;
 mod ids;
+mod links;
 mod secret;
+pub use links::external_url;
 
 pub use command::{Command, CommandKind};
 pub use event::{

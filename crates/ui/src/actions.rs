@@ -112,6 +112,7 @@ impl State {
     }
     pub(super) fn cancel_action(&self, w: &AppWindow) {
         self.clear_file_confirmation();
+        w.set_link_target(Default::default());
         w.set_action_dialog(0);
         self.actions.pending_edit.set(None);
         w.set_edit_saving(false);
@@ -491,7 +492,11 @@ pub(super) fn bind(window: &AppWindow, state: &Rc<State>) {
     let weak = window.as_weak();
     window.on_cancel_action(move || {
         if let Some(w) = weak.upgrade() {
-            s.cancel_action(&w);
+            if w.get_action_dialog() == OPEN_LINK_DIALOG {
+                close_link_confirmation(&w);
+            } else {
+                s.cancel_action(&w);
+            }
         }
     });
     let s = state.clone();

@@ -58,6 +58,13 @@ pub struct Options {
 }
 type NotifyFn = Box<dyn Fn(Notification) -> Result<(), CommandError>>;
 type VideoFn = Box<dyn Fn(VideoRequest) -> Result<(), CommandError>>;
+const OPEN_LINK_DIALOG: i32 = 5;
+
+fn close_link_confirmation(window: &AppWindow) {
+    window.set_link_target(Default::default());
+    window.set_action_dialog(0);
+}
+
 struct State {
     check: check::Check,
     attachments: attachments::Attachments,
@@ -693,7 +700,7 @@ impl State {
                     window.set_error("Could not download the video.".into());
                 } else { self.download_failed(window,id); }
             },
-            Event::FileOperationFailed=>window.set_error("Could not open or locate the file. Internet-zone marking is required before opening.".into()),
+            Event::FileOperationFailed=>window.set_error("Could not open the link or file, or locate the file. Downloaded files require internet-zone marking.".into()),
             Event::VideoState(state) if state.stream.is_some()=>self.stream_status(window,state.stream.unwrap_or_default()),
             Event::VideoState(state) if state.audio_token.is_some()=>self.voice_state(window,state),
             Event::VideoState(state) if state.dismissed => self.close_video(window),
@@ -950,6 +957,42 @@ impl Ui {
         actions::bind(&window, &state);
         attachments::bind(&window, &state);
         scale::bind(&window, &state);
+        let s = state.clone();
+        window.on_text_link(move |key, x, y| {
+            s.feed
+                .link_at(&key, x, y)
+                .map_or_else(Default::default, |target| target.url.into())
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_text_link_clicked(move |key, x, y| {
+            if let Some(w) = weak.upgrade()
+                && !w.get_blocked()
+                && w.get_action_dialog() == 0
+                && let Some(target) = s.feed.link_at(&key, x, y)
+            {
+                if target.hidden {
+                    w.set_link_target(target.url.into());
+                    w.set_action_dialog(OPEN_LINK_DIALOG);
+                } else {
+                    s.file_request(&w, tg_core::FileRequest::OpenUrl(target.url));
+                }
+            }
+        });
+        let weak = window.as_weak();
+        let s = state.clone();
+        window.on_confirm_link(move || {
+            if let Some(w) = weak.upgrade()
+                && !w.get_blocked()
+                && w.get_action_dialog() == OPEN_LINK_DIALOG
+            {
+                let target = w.get_link_target();
+                close_link_confirmation(&w);
+                if !target.is_empty() {
+                    s.file_request(&w, tg_core::FileRequest::OpenUrl(target.to_string()));
+                }
+            }
+        });
         let weak = window.as_weak();
         let s = state.clone();
         window.on_media_ready(move || {

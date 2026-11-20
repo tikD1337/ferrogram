@@ -18,6 +18,129 @@ const CACHE_BYTES: usize = 2 * 1024 * 1024;
 const CACHE_ENTRIES: usize = 8192;
 const ENTRY_COST: usize = 128;
 const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_LINK_BYTES: usize = 256 * 1024;
+
+#[derive(Default)]
+pub(crate) struct Links {
+    entries: Vec<Link>,
+}
+struct Link {
+    target: LinkTarget,
+    rects: Vec<[f32; 4]>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LinkTarget {
+    pub url: String,
+    pub hidden: bool,
+}
+impl Links {
+    fn from_layout(
+        message: &Message,
+        layout: &Layout<Color>,
+        placements: &[LinePlacement],
+        padding: f32,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        use parley::{Affinity, Cursor, Selection};
+        let spoilers: Vec<_> = message
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Spoiler)
+            .filter_map(|e| byte_range(&message.text, e.offset, e.length))
+            .collect();
+        let mut links = Self::default();
+        let mut bytes = 0;
+        for entity in &message.entities {
+            if !matches!(
+                entity.kind,
+                EntityKind::Url | EntityKind::TextUrl { .. } | EntityKind::Mention
+            ) {
+                continue;
+            }
+            let Some(range) = byte_range(&message.text, entity.offset, entity.length) else {
+                continue;
+            };
+            if range.is_empty()
+                || spoilers
+                    .iter()
+                    .any(|s| s.start < range.end && range.start < s.end)
+            {
+                continue;
+            }
+            let label = &message.text[range.clone()];
+            let target = match &entity.kind {
+                EntityKind::Url => tg_core::external_url(label),
+                EntityKind::TextUrl { target } => tg_core::external_url(target),
+                EntityKind::Mention => label
+                    .strip_prefix('@')
+                    .filter(|name| {
+                        !name.is_empty()
+                            && name.len() <= 32
+                            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    })
+                    .map(|name| format!("https://t.me/{name}")),
+                _ => None,
+            };
+            let Some(url) = target else {
+                continue;
+            };
+            let hidden = matches!(entity.kind, EntityKind::TextUrl { .. })
+                && tg_core::external_url(label).as_deref() != Some(url.as_str());
+            let start = Cursor::from_byte_index(layout, range.start, Affinity::Downstream);
+            let end = Cursor::from_byte_index(layout, range.end, Affinity::Upstream);
+            let rects: Vec<_> = Selection::new(start, end)
+                .geometry(layout)
+                .into_iter()
+                .filter_map(|(rect, line)| {
+                    let p = placements.get(line)?;
+                    let x0 = (rect.x0 as f32 + padding).max(0.0);
+                    let x1 = (rect.x1 as f32 + padding).min(width as f32);
+                    let y0 = p.top.max(0.0);
+                    let y1 = p.bottom.min(height as f32);
+                    (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
+                })
+                .collect();
+            // Charge double entry size for Vec growth; targets and geometry are byte-bounded.
+            let cost = 2 * std::mem::size_of::<Link>()
+                + url.capacity()
+                + rects.capacity() * std::mem::size_of::<[f32; 4]>();
+            if bytes + cost > MAX_LINK_BYTES {
+                break;
+            }
+            if !rects.is_empty() {
+                bytes += cost;
+                links.entries.push(Link {
+                    target: LinkTarget { url, hidden },
+                    rects,
+                });
+            }
+        }
+        links
+    }
+    /// Physical image coordinates, with half-open bounds so blank space never snaps to text.
+    pub fn link_at(&self, (x, y): (f32, f32)) -> Option<&LinkTarget> {
+        self.entries
+            .iter()
+            .find(|link| {
+                link.rects
+                    .iter()
+                    .any(|&[x0, y0, x1, y1]| x >= x0 && x < x1 && y >= y0 && y < y1)
+            })
+            .map(|link| &link.target)
+    }
+    pub fn bytes(&self) -> usize {
+        self.entries.capacity() * std::mem::size_of::<Link>()
+            + self
+                .entries
+                .iter()
+                .map(|link| {
+                    link.target.url.capacity()
+                        + link.rects.capacity() * std::mem::size_of::<[f32; 4]>()
+                })
+                .sum::<usize>()
+    }
+}
 
 pub(crate) fn byte_range(text: &str, offset: u32, length: u32) -> Option<Range<usize>> {
     let end = offset.checked_add(length)?;
@@ -62,6 +185,7 @@ pub(crate) struct Rendered {
     pub clipped: bool,
     /// Advance of the last line in pixels; the full width for RTL text.
     pub last_line: u32,
+    pub links: Links,
 }
 // Parley 0.12 adds a root-font strut and rounds normal line heights. Preserve the
 // measured 0.11 message geometry: actual run metrics, fractional line accumulation,
@@ -141,6 +265,8 @@ impl TextEngine {
     }
     pub fn render_emoji(&mut self, message: &Message, scale: f32, width: f32) -> Rendered {
         let mut rendered = self.render_sized(message, scale, width, 120.0);
+        // Emoji rasters are trimmed to painted bounds and are not interactive message text.
+        rendered.links = Links::default();
         let (mut left, mut top) = (rendered.width, rendered.height);
         let (mut right, mut bottom) = (0, 0);
         for (y, row) in rendered
@@ -331,6 +457,14 @@ impl TextEngine {
             height,
             clipped: height < full_height,
             last_line,
+            links: Links::from_layout(
+                message,
+                &layout,
+                &placements,
+                padding as f32,
+                image_width,
+                height,
+            ),
         }
     }
     fn draw(&mut self, canvas: &mut Canvas, run: &GlyphRun<'_, Color>, shift: f32, shift_x: f32) {
@@ -486,6 +620,130 @@ impl Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn linked_message(text: &str, range: Range<usize>, kind: EntityKind) -> Message {
+        Message {
+            attachment: None,
+            reply: None,
+            forwarded: None,
+            edited: false,
+            is_text: true,
+            service: false,
+            permissions: None,
+            video: None,
+            photo: None,
+            id: tg_core::MessageId(1),
+            chat: tg_core::ChatId(1),
+            date: 0,
+            outgoing: false,
+            text: text.into(),
+            entities: vec![tg_core::TextEntity {
+                offset: text[..range.start].encode_utf16().count() as u32,
+                length: text[range].encode_utf16().count() as u32,
+                kind,
+            }],
+            send_state: tg_core::SendState::Sent,
+            album: 0,
+            sender_id: 0,
+            sender: None,
+        }
+    }
+    #[test]
+    fn link_geometry_tracks_utf16_wrapping_rtl_and_scale() {
+        let mut engine = TextEngine::new(None);
+        for text in [
+            "🙂 before example.org/long/path/that/wraps after",
+            "שלום example.org/long/path/that/wraps סוף",
+        ] {
+            let start = text.find("example").unwrap();
+            let end = text[start..].find(' ').map_or(text.len(), |n| start + n);
+            let message = linked_message(text, start..end, EntityKind::Url);
+            for scale in [1.0, 1.5, 2.0] {
+                let rendered = engine.render(&message, scale, 90.0 * scale);
+                assert!(!rendered.links.entries.is_empty());
+                let link = &rendered.links.entries[0];
+                assert!(link.rects.len() > 1);
+                for &[x0, y0, x1, y1] in &link.rects {
+                    assert_eq!(
+                        rendered
+                            .links
+                            .link_at(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+                            .map(|target| target.url.as_str()),
+                        Some("https://example.org/long/path/that/wraps")
+                    );
+                    assert!(
+                        x0 >= 0.0
+                            && y0 >= 0.0
+                            && x1 <= rendered.width as f32
+                            && y1 <= rendered.height as f32
+                    );
+                }
+                for point in [
+                    (-1.0, 0.0),
+                    (0.0, -1.0),
+                    (rendered.width as f32, 0.0),
+                    (0.0, rendered.height as f32),
+                    (f32::NAN, 0.0),
+                ] {
+                    assert_eq!(rendered.links.link_at(point), None);
+                }
+            }
+        }
+    }
+    #[test]
+    fn hidden_links_invalid_ranges_mentions_and_text_urls() {
+        let mut engine = TextEngine::new(None);
+        for (text, kind, target, hidden) in [
+            (
+                "@telegram",
+                EntityKind::Mention,
+                "https://t.me/telegram",
+                false,
+            ),
+            (
+                "label",
+                EntityKind::TextUrl {
+                    target: "http://example.org/actual".into(),
+                },
+                "http://example.org/actual",
+                true,
+            ),
+            (
+                "example.org",
+                EntityKind::TextUrl {
+                    target: "HTTPS://example.org".into(),
+                },
+                "https://example.org/",
+                false,
+            ),
+        ] {
+            let mut message = linked_message(text, 0..text.len(), kind);
+            let rendered = engine.render(&message, 1.0, 200.0);
+            assert_eq!(
+                rendered.links.entries[0].target,
+                LinkTarget {
+                    url: target.into(),
+                    hidden
+                }
+            );
+            message.entities.push(tg_core::TextEntity {
+                offset: 1,
+                length: 2,
+                kind: EntityKind::Spoiler,
+            });
+            assert!(engine.render(&message, 1.0, 200.0).links.entries.is_empty());
+            message.entities.pop();
+            message.entities[0].offset = u32::MAX;
+            assert!(engine.render(&message, 1.0, 200.0).links.entries.is_empty());
+        }
+        let message = linked_message(
+            "label",
+            0..5,
+            EntityKind::TextUrl {
+                target: "file:///C:/a.exe".into(),
+            },
+        );
+        assert!(engine.render(&message, 1.0, 200.0).links.entries.is_empty());
+    }
     #[test]
     fn multilingual_images_are_bounded_and_use_cached_glyphs() {
         let mut engine = TextEngine::new(None);
@@ -573,5 +831,23 @@ mod tests {
         assert_eq!(byte_range(text, 2, 1), None);
         assert_eq!(byte_range(text, 1, 1), None);
         assert_eq!(byte_range(text, u32::MAX, 2), None);
+    }
+    #[test]
+    fn link_metadata_is_byte_bounded_and_empty_entities_do_not_hit() {
+        let mut engine = TextEngine::new(None);
+        let mut message = linked_message(
+            "label",
+            0..5,
+            EntityKind::TextUrl {
+                target: format!("https://example.org/{}", "x".repeat(4000)),
+            },
+        );
+        message.entities = vec![message.entities[0].clone(); 1000];
+        let rendered = engine.render(&message, 1.0, 200.0);
+        assert!(!rendered.links.entries.is_empty() && rendered.links.entries.len() < 1000);
+        assert!(rendered.links.bytes() <= MAX_LINK_BYTES);
+        message.entities.truncate(1);
+        message.entities[0].length = 0;
+        assert!(engine.render(&message, 1.0, 200.0).links.entries.is_empty());
     }
 }

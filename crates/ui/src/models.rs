@@ -205,6 +205,7 @@ struct Cached {
     row: MessageRow,
     /// Cell size per album member, for image keys: (member, width, height).
     cells: Vec<(MessageId, f32, f32)>,
+    links: crate::text::Links,
 }
 
 pub(crate) struct Feed {
@@ -379,7 +380,8 @@ impl Feed {
                     .any(|row| row.key == keys[i] && row.context == context)
                 {
                     cache.retain(|row| row.key != keys[i]);
-                    let (row, cells) = self.render(&history.messages[groups[i].clone()], &context);
+                    let (row, cells, links) =
+                        self.render(&history.messages[groups[i].clone()], &context);
                     rendered = true;
                     geometry.measure(i, row.height);
                     cache.push(Cached {
@@ -387,6 +389,7 @@ impl Feed {
                         context,
                         row,
                         cells,
+                        links,
                     });
                     break;
                 }
@@ -422,8 +425,9 @@ impl Feed {
                 && let Some(index) = cache.iter().position(|row| row.key == id)
             {
                 let mut cached = cache.swap_remove(index);
-                let cost =
-                    (cached.row.text_width * scale * cached.row.text_height * scale * 4.0) as usize;
+                let cost = (cached.row.text_width * scale * cached.row.text_height * scale * 4.0)
+                    as usize
+                    + cached.links.bytes();
                 if bytes.saturating_add(cost) <= 96 * 1024 * 1024 {
                     bytes += cost;
                     cached.row.row_y = y;
@@ -443,15 +447,13 @@ impl Feed {
         &self,
         group: &[Message],
         context: &Context,
-    ) -> (MessageRow, Vec<(MessageId, f32, f32)>) {
+    ) -> (MessageRow, Vec<(MessageId, f32, f32)>, crate::text::Links) {
         let scale = self.scale.get().clamp(0.5, 4.0);
         let max_width = self.width.get().clamp(80.0, 504.0);
         let (first, last) = (&group[0], &group[group.len() - 1]);
         if first.service {
-            return (
-                self.render_service(first, context, scale, max_width),
-                Vec::new(),
-            );
+            let (row, links) = self.render_service(first, context, scale, max_width);
+            return (row, Vec::new(), links);
         }
         let round = matches!(first.attachment, Some(tg_core::Attachment::Round(_)));
         let sticker = matches!(
@@ -688,11 +690,19 @@ impl Feed {
                 }
             })
             .collect();
-        let rendered = text.map_or_else(Image::default, |t| {
-            Image::from_rgba8_premultiplied(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                &t.pixels, t.width, t.height,
-            ))
-        });
+        let (rendered, links) = text.map_or_else(
+            || (Image::default(), crate::text::Links::default()),
+            |t| {
+                (
+                    Image::from_rgba8_premultiplied(
+                        SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                            &t.pixels, t.width, t.height,
+                        ),
+                    ),
+                    t.links,
+                )
+            },
+        );
         let mut time = clock::time(last.date);
         if last.edited {
             time.insert_str(0, "edited ");
@@ -776,7 +786,7 @@ impl Feed {
             ..Default::default()
         };
         crate::attachments::decorate(&mut row, first, self.audio.get());
-        (row, cells)
+        (row, cells, links)
     }
     /// A centred translucent pill ("Anna joined the group"), without a bubble, time or menu.
     fn render_service(
@@ -785,7 +795,7 @@ impl Feed {
         context: &Context,
         scale: f32,
         max_width: f32,
-    ) -> MessageRow {
+    ) -> (MessageRow, crate::text::Links) {
         let available = (max_width - 2.0 * SERVICE_PAD_X).max(1.0);
         let text =
             self.engine
@@ -795,33 +805,44 @@ impl Feed {
         let bubble_y =
             if context.date { DATE } else { 0.0 } + if context.unread { 32.0 } else { 0.0 } + GAP;
         let bubble_height = text_height + 2.0 * SERVICE_PAD_Y;
-        MessageRow {
-            key: message.id.0.to_string().into(),
-            service: true,
-            unread: context.unread,
-            unread_y: if context.date { DATE } else { 0.0 },
-            date: if context.date {
-                clock::day_label(message.date).into()
-            } else {
-                Default::default()
-            },
-            height: bubble_y + bubble_height + if context.last { 10.0 } else { 0.0 },
-            bubble_y,
-            bubble_width: text_width + 2.0 * SERVICE_PAD_X,
-            bubble_height,
-            rendered: Image::from_rgba8_premultiplied(
-                SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                    &text.pixels,
-                    text.width,
-                    text.height,
+        (
+            MessageRow {
+                key: message.id.0.to_string().into(),
+                service: true,
+                unread: context.unread,
+                unread_y: if context.date { DATE } else { 0.0 },
+                date: if context.date {
+                    clock::day_label(message.date).into()
+                } else {
+                    Default::default()
+                },
+                height: bubble_y + bubble_height + if context.last { 10.0 } else { 0.0 },
+                bubble_y,
+                bubble_width: text_width + 2.0 * SERVICE_PAD_X,
+                bubble_height,
+                rendered: Image::from_rgba8_premultiplied(
+                    SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                        &text.pixels,
+                        text.width,
+                        text.height,
+                    ),
                 ),
-            ),
-            text_y: SERVICE_PAD_Y,
-            text_width,
-            text_height,
-            cells: ModelRc::new(VecModel::from(Vec::<PhotoCell>::new())),
-            ..Default::default()
-        }
+                text_y: SERVICE_PAD_Y,
+                text_width,
+                text_height,
+                cells: ModelRc::new(VecModel::from(Vec::<PhotoCell>::new())),
+                ..Default::default()
+            },
+            text.links,
+        )
+    }
+    /// Coordinates relative to the displayed text image, in logical pixels.
+    pub fn link_at(&self, key: &str, x: f32, y: f32) -> Option<crate::text::LinkTarget> {
+        let id = MessageId(key.parse().ok()?);
+        let visible = self.visible.borrow();
+        let cached = visible.iter().find(|row| row.key == id)?;
+        let scale = self.scale.get().clamp(0.5, 4.0);
+        cached.links.link_at((x * scale, y * scale)).cloned()
     }
     fn complete_album(&self, messages: &[Message], range: &Range<usize>) -> bool {
         if !in_grid(&messages[range.start]) || range.len() == MAX_ALBUM {
@@ -1043,6 +1064,41 @@ pub(crate) fn album_layout(sizes: &[(f32, f32)], max_width: f32) -> (Vec<[f32; 4
 mod feed_tests {
     use super::*;
     use tg_core::{Message, MessageId};
+    #[test]
+    fn album_caption_links_use_the_displayed_caption_and_expire_with_the_row() {
+        let feed = Feed::new(None);
+        for scale in [1.0, 1.5, 2.0] {
+            let mut first = album_item(1, 77);
+            first.text.clear();
+            let mut second = album_item(2, 77);
+            second.text = "example.org".into();
+            second.entities = vec![tg_core::TextEntity {
+                offset: 0,
+                length: 11,
+                kind: tg_core::EntityKind::Url,
+            }];
+            feed.history.borrow_mut().messages = vec![first, second];
+            feed.scale.set(scale);
+            feed.invalidate();
+            feed.layout(0.0, 1200.0, false);
+            let row = feed.row_data(0).unwrap();
+            let key = row.key.to_string();
+            let hit = (0..row.text_height as u32)
+                .find_map(|y| {
+                    (0..row.text_width as u32).find_map(|x| {
+                        feed.link_at(&key, x as f32, y as f32)
+                            .map(|url| (x as f32, y as f32, url))
+                    })
+                })
+                .unwrap();
+            assert_eq!(hit.2.url, "https://example.org/");
+            assert!(!hit.2.hidden);
+            assert_eq!(feed.link_at(&key, -1.0, -1.0), None);
+            assert_eq!(feed.link_at("not an ID", hit.0, hit.1), None);
+            feed.invalidate_message(MessageId(2 * 1048576));
+            assert_eq!(feed.link_at(&key, hit.0, hit.1), None);
+        }
+    }
     fn message(n: i64) -> Message {
         Message {
             attachment: None,

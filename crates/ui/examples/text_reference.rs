@@ -86,6 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 engine.render(&message, scale, width)
             };
+            assert!(rendered.links.link_at((-1.0, -1.0)).is_none());
+            assert!(rendered.links.bytes() <= 256 * 1024);
             metrics.push_str(&format!(
                 "{name}-{suffix}: {}x{}, last_line={}, clipped={}\n",
                 rendered.width, rendered.height, rendered.last_line, rendered.clipped
