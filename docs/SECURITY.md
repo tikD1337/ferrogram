@@ -144,6 +144,9 @@ OpenSSL, zlib, the Visual C++ runtime DLLs and the license texts, unpacked into 
 ### Other measures
 
 - Codes, passwords, keys and phone numbers never enter logs.
+- A pasted clipboard image is written unencrypted to the user's temporary folder (per-user ACL)
+  only while it is previewed or uploading, and deleted afterwards. Paths and captions of sent
+  files are not logged, and error messages do not echo them.
 - Planned: a list of active sessions and a recommendation to enable two-step verification in
   the UI, so a stolen session can be ended from another device.
 - Planned: dependency checks with `cargo audit` and `cargo deny` in CI.

@@ -185,7 +185,7 @@ the custom message text component as the solution; awaiting approval.
 | `telegram` | TDLib wrapper, engine thread | `core` |
 | `ui` | Slint UI and view models | `core` |
 | `security` | Database key protection: TPM and DPAPI, the key on a locked page; master password planned | — |
-| `platform` | Windows: notifications, video and audio (Media Foundation), opening files, startup error box, process hardening; tray planned | — |
+| `platform` | Windows: notifications, video and audio (Media Foundation), opening and picking files, clipboard images, startup error box, process hardening; tray planned | — |
 
 `media` and `storage` will appear when there is code for them. With TDLib, separate message
 storage is unnecessary — it is inside the library. Measurements live in `scripts/` and `bench/`.
@@ -270,3 +270,22 @@ These are hypotheses. Each is validated by before and after measurements.
   `tdjson.dll` from its own folder, otherwise from the TDLib installation it was built against.
   Veygram's own `api_id`/`api_hash` are built into release executables only; development builds
   read `.env`. An installer, code signing and automatic updates are later steps.
+
+## 9. Decisions of 2026-11-20
+
+- **Sending photos and documents** (`Command::SendPhoto`, `Command::SendDocument`) passes only a
+  local path and an optional plain caption (at most 1024 characters). `tg-telegram` maps them to
+  `sendMessage` with `inputMessagePhoto` or `inputMessageDocument` and `inputFileLocal`, so TDLib
+  streams the file from disk; no file bytes cross the `tg-core` boundary.
+- **The open-file dialog and the clipboard bitmap** are Win32 calls in `tg-platform`
+  (`pick_file`, `clipboard_has_image`, `read_clipboard_image`). `tg-app` injects them into `tg-ui`
+  as `AttachmentSources`, so `tg-ui` has no `unsafe` code. Both run on a short-lived worker
+  started by the attach button or Ctrl+V; nothing runs while idle. Ctrl+V attaches only a
+  bitmap without text (copied spreadsheet cells carry both and paste as text), and falls
+  through to the normal text paste whenever an attachment cannot start.
+- **Previews are bounded**: PNG/JPEG only, at most 32 MiB encoded and 8 megapixels, scaled to
+  320x200 before reaching the UI. Larger or other images are still sent unchanged, as files.
+- **Pasted images** are decoded while the clipboard memory is lent out (no raw copy), written as a
+  PNG into the user's temporary folder and deleted once TDLib reports the send as finished
+  (`Event::LocalFileSendFinished`), on cancel, on logout, or at exit after the engine has closed.
+  At most eight uploads are pending at a time.

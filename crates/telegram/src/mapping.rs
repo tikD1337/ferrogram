@@ -80,6 +80,8 @@ pub(crate) fn command_kind(value: &Value) -> CommandKind {
         Some("history" | "history_around") => CommandKind::LoadOlderMessages,
         Some("history_newer") => CommandKind::LoadNewerMessages,
         Some("send_text") => CommandKind::SendText,
+        Some("send_photo") => CommandKind::SendPhoto,
+        Some("send_document") => CommandKind::SendDocument,
         Some("edit_text") => CommandKind::EditText,
         Some("delete") => CommandKind::DeleteMessages,
         Some("forward") => CommandKind::ForwardMessages,
@@ -376,6 +378,9 @@ fn origin(value: &Value, users: &Users, chats: &Chats) -> (i64, String) {
 pub struct Decoder {
     pub(crate) chats: Chats,
     pub(crate) users: Users,
+    // Only local paths, never file bytes. The UI admits at most eight active uploads.
+    uploads: std::collections::BTreeMap<(ChatId, MessageId), std::path::PathBuf>,
+    finished_uploads: std::collections::VecDeque<(ChatId, MessageId)>,
 }
 
 impl Decoder {
@@ -392,9 +397,14 @@ impl Decoder {
     ) -> Result<(), CommandError> {
         let extra = &value["@extra"];
         match value["@type"].as_str() {
-            Some("updateAuthorizationState") => emit(Event::AuthStateChanged(auth(
-                &value["authorization_state"],
-            )?)),
+            Some("updateAuthorizationState") => {
+                let state = auth(&value["authorization_state"])?;
+                if state == AuthState::Closed {
+                    self.uploads.clear();
+                    self.finished_uploads.clear();
+                }
+                emit(Event::AuthStateChanged(state));
+            }
             Some(
                 "updateNewChat"
                 | "updateChatPosition"
@@ -562,6 +572,18 @@ impl Decoder {
                 }
             }
             Some("updateMessageSendSucceeded" | "updateMessageSendFailed") => {
+                let key = (
+                    ChatId(integer(&value["message"]["chat_id"])?),
+                    MessageId(integer(&value["old_message_id"])?),
+                );
+                if let Some(path) = self.uploads.remove(&key) {
+                    emit(Event::LocalFileSendFinished(path));
+                } else {
+                    if self.finished_uploads.len() == 128 {
+                        self.finished_uploads.pop_front();
+                    }
+                    self.finished_uploads.push_back(key);
+                }
                 if let Some(mut message) = message(&value["message"], &self.users, &self.chats)? {
                     message.send_state = if value["@type"] == "updateMessageSendFailed" {
                         SendState::Failed(td_error(&value["error"]))
@@ -575,8 +597,42 @@ impl Decoder {
                 }
             }
             Some("message")
-                if extra["command"] == "send_text" || extra["command"] == "edit_text" =>
+                if matches!(
+                    extra["command"].as_str(),
+                    Some("send_text" | "edit_text" | "send_photo" | "send_document")
+                ) =>
             {
+                if matches!(
+                    extra["command"].as_str(),
+                    Some("send_photo" | "send_document")
+                ) {
+                    let path = std::path::PathBuf::from(string(&extra["local_path"], 4096)?);
+                    let key = (
+                        ChatId(integer(&value["chat_id"])?),
+                        MessageId(integer(&value["id"])?),
+                    );
+                    let already_finished = self
+                        .finished_uploads
+                        .iter()
+                        .position(|k| *k == key)
+                        .and_then(|i| self.finished_uploads.remove(i))
+                        .is_some();
+                    if already_finished {
+                        emit(Event::LocalFileSendFinished(path));
+                        // The terminal update already delivered the final message (the UI
+                        // appends it when the pending one was never shown); a pending copy
+                        // here would reintroduce a stale ID.
+                        return Ok(());
+                    }
+                    if value["sending_state"]["@type"] == "messageSendingStatePending" {
+                        // A saturated tracker retains source files in the UI until shutdown.
+                        if self.uploads.len() < 128 {
+                            self.uploads.insert(key, path);
+                        }
+                    } else {
+                        emit(Event::LocalFileSendFinished(path));
+                    }
+                }
                 if let Some(message) = message(value, &self.users, &self.chats)? {
                     emit(Event::NewMessage(message));
                 }
@@ -638,10 +694,20 @@ impl Decoder {
             Some("error") if extra["command"] == "chats" && value["code"] == 404 => {
                 emit(Event::ChatsLoaded { has_more: false })
             }
-            Some("error") => emit(Event::CommandFailed {
-                command: command_kind(&extra["command"]),
-                error: td_error(value),
-            }),
+            Some("error") => {
+                if matches!(
+                    extra["command"].as_str(),
+                    Some("send_photo" | "send_document")
+                ) {
+                    emit(Event::LocalFileSendFinished(std::path::PathBuf::from(
+                        string(&extra["local_path"], 4096)?,
+                    )));
+                }
+                emit(Event::CommandFailed {
+                    command: command_kind(&extra["command"]),
+                    error: td_error(value),
+                });
+            }
             _ => {}
         }
         Ok(())

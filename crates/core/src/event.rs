@@ -229,6 +229,8 @@ pub enum Event {
         messages: Vec<Message>,
     },
     NewMessage(Message),
+    /// TDLib no longer reads the submitted local file (success or failure).
+    LocalFileSendFinished(std::path::PathBuf),
     ReplyResolved {
         chat: ChatId,
         message: MessageId,

@@ -7,6 +7,8 @@ mod clock;
 mod history;
 mod media;
 mod models;
+mod outgoing;
+pub use outgoing::AttachmentSources;
 mod scale;
 mod streaming;
 mod text;
@@ -66,6 +68,7 @@ fn close_link_confirmation(window: &AppWindow) {
 }
 
 struct State {
+    outgoing: outgoing::Outgoing,
     check: check::Check,
     attachments: attachments::Attachments,
     actions: actions::Actions,
@@ -492,6 +495,7 @@ impl State {
             self.stop_voice(window);
         }
         self.cancel_action(window);
+        self.cancel_outgoing(window);
         self.feed.jump_target.set(None);
         self.feed.highlight.set(None);
         self.seek_start.set(unread && chat.last_read_inbox.0 == 0);
@@ -524,6 +528,7 @@ impl State {
             self.check.record(state);
         }
         match event {
+            Event::LocalFileSendFinished(path) => self.upload_finished(&path),
             Event::RoundFrame(frame) => self.round_frame(window, frame),
             event @ (Event::MessageProperties { .. }
             | Event::MessageContentChanged { .. }
@@ -604,6 +609,7 @@ impl State {
                 self.event(window, Event::NewMessage(message));
             }
             Event::AuthStateChanged(auth) => {
+                if auth == AuthState::Closed { self.outgoing.clear_uploads(); }
                 window.set_auth_input("".into());
                 window.set_error("".into());
                 if auth != AuthState::Ready {
@@ -647,6 +653,7 @@ impl State {
                         }
                     }
                     AuthState::LoggingOut | AuthState::Closed => {
+                        self.cancel_outgoing(window);
                         self.stop_voice(window);
                         self.cancel_action(window);
                         *self.reads.borrow_mut() = ReadBatches::default();
@@ -924,6 +931,7 @@ impl Ui {
         *chats.media.borrow_mut() = Some(media.clone());
         *feed.media.borrow_mut() = Some(media.clone());
         let state = Rc::new(State {
+            outgoing: Default::default(),
             check: Default::default(),
             attachments: Default::default(),
             actions: actions::Actions::new(chats.clone()),
@@ -956,6 +964,7 @@ impl Ui {
         });
         actions::bind(&window, &state);
         attachments::bind(&window, &state);
+        outgoing::bind(&window, &state);
         scale::bind(&window, &state);
         let s = state.clone();
         window.on_text_link(move |key, x, y| {
@@ -1281,6 +1290,10 @@ impl Ui {
     ) {
         *self.state.attachments.files.borrow_mut() = Some(Box::new(handler));
     }
+    /// The open-file dialog and clipboard used by the attach button and Ctrl+V.
+    pub fn on_attachment_sources(&self, sources: AttachmentSources) {
+        self.state.outgoing.sources.set(Some(sources));
+    }
     pub fn on_video(&self, handler: impl Fn(VideoRequest) -> Result<(), CommandError> + 'static) {
         *self.state.video.borrow_mut() = Box::new(handler);
     }
@@ -1292,7 +1305,9 @@ impl Ui {
     pub fn event_sink(&self) -> EventSink {
         self.sink.clone()
     }
-    pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Keep the UI owner alive until the Telegram engine has joined: pending clipboard
+    /// upload files must outlive the event loop, since TDLib reads them asynchronously.
+    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let result = Rc::new(RefCell::new(None));
         let snapshot_requested = self.snapshot.is_some();
         let demo_timer = slint::Timer::default();
@@ -1387,7 +1402,7 @@ impl Ui {
                 let _ = slint::quit_event_loop();
             });
         }
-        if let Some(path) = self.snapshot {
+        if let Some(path) = self.snapshot.clone() {
             let weak = self.window.as_weak();
             let result = result.clone();
             // Single-shot render settling delay, not polling. File encoding/writing runs off-thread.

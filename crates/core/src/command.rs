@@ -26,6 +26,8 @@ pub enum CommandKind {
     LoadOlderMessages,
     LoadNewerMessages,
     SendText,
+    SendPhoto,
+    SendDocument,
     LogOut,
     ShutDown,
     Initialize,
@@ -38,6 +40,17 @@ pub enum CommandKind {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Command {
+    /// TDLib reads the local file asynchronously; no file bytes cross this boundary.
+    SendPhoto {
+        chat: ChatId,
+        path: std::path::PathBuf,
+        caption: Option<String>,
+    },
+    SendDocument {
+        chat: ChatId,
+        path: std::path::PathBuf,
+        caption: Option<String>,
+    },
     /// Streaming download of `limit` bytes from `offset`; repeating it with the same offset and
     /// a larger limit extends the running download instead of restarting it.
     DownloadRange {
