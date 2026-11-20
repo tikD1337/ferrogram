@@ -816,7 +816,12 @@ export component AppWindow inherits Window {
         TouchArea { }
         FocusScope {
             init => { self.focus(); }
-            key-pressed(event) => { if event.text == Key.Escape { root.cancel-action(); return accept; } return reject; }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.cancel-action(); return accept; }
+                // Enter confirms the link dialog, as the default button does in Telegram Desktop.
+                if root.action-dialog == 5 && event.text == Key.Return && !root.blocked && root.link-target != "" { root.confirm-link(); return accept; }
+                return reject;
+            }
         }
         Rectangle {
             width: 420px; height: root.action-dialog == 1 ? 220px : root.action-dialog == 3 || root.action-dialog == 5 ? 260px : root.action-dialog == 4 ? 250px : 440px;

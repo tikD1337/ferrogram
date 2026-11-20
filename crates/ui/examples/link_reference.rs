@@ -27,6 +27,11 @@ fn click(w: &AppWindow, p: slint::LogicalPosition, button: PointerEventButton) {
         },
     );
 }
+fn enter(w: &AppWindow) {
+    let text: slint::SharedString = slint::platform::Key::Return.into();
+    pointer(w, WindowEvent::KeyPressed { text: text.clone() });
+    pointer(w, WindowEvent::KeyReleased { text });
+}
 fn verify(
     w: &AppWindow,
     state: &State,
@@ -80,7 +85,16 @@ fn verify(
         return Err("Cancelling did not discard the pending link".into());
     }
     click(w, p, PointerEventButton::Left);
-    w.invoke_confirm_link();
+    w.set_blocked(true);
+    enter(w);
+    if w.get_action_dialog() != OPEN_LINK_DIALOG || !requests.borrow().is_empty() {
+        return Err("Enter confirmed the link while the UI was blocked".into());
+    }
+    w.set_blocked(false);
+    enter(w);
+    if w.get_action_dialog() != 0 || requests.borrow().len() != 1 {
+        return Err("Enter did not confirm the link dialog".into());
+    }
     w.invoke_confirm_link();
     if w.get_action_dialog() != 0
         || !w.get_link_target().is_empty()
