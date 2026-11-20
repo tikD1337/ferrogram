@@ -98,6 +98,21 @@ fn thumbnail(path: &Path) -> Result<slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     ))
 }
 
+/// Telegram rejects photos above 10 MB; larger PNG/JPEG files default to "send as file".
+const PHOTO_BYTES: u64 = 10 * 1024 * 1024;
+
+/// `canonicalize` returns verbatim paths (`\\?\C:\...`). Drive paths short enough for classic
+/// Win32 file APIs reach TDLib without that prefix; UNC and long paths keep it.
+fn plain_path(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.len() < 260 && rest.as_bytes().get(1) == Some(&b':') => rest.into(),
+        _ => path,
+    }
+}
+
 fn prepare(path: PathBuf, temporary: bool) -> Result<Prepared, String> {
     let mut prepared = Prepared {
         path,
@@ -111,8 +126,10 @@ fn prepare(path: PathBuf, temporary: bool) -> Result<Prepared, String> {
     if !metadata.is_file() {
         return Err("Select a regular file.".into());
     }
-    prepared.path = std::fs::canonicalize(&prepared.path)
-        .map_err(|_| "Could not resolve the selected file.")?;
+    prepared.path = plain_path(
+        std::fs::canonicalize(&prepared.path)
+            .map_err(|_| "Could not resolve the selected file.")?,
+    );
     let path = prepared
         .path
         .to_str()
@@ -301,7 +318,7 @@ impl State {
                 w.set_outgoing_size(format!("{} bytes", prepared.size).into());
                 w.set_outgoing_photo(prepared.photo);
                 w.set_outgoing_has_preview(prepared.pixels.is_some());
-                w.set_outgoing_as_file(!prepared.photo);
+                w.set_outgoing_as_file(!prepared.photo || prepared.size > PHOTO_BYTES);
                 w.set_outgoing_preview(
                     prepared
                         .pixels
@@ -357,10 +374,11 @@ impl State {
         }
     }
     pub(super) fn upload_finished(&self, path: &Path) {
-        self.outgoing
-            .uploads
-            .borrow_mut()
-            .retain(|p| p.path != path);
+        let mut uploads = self.outgoing.uploads.borrow_mut();
+        // One event per finished upload: release one slot even if the same file is queued twice.
+        if let Some(index) = uploads.iter().position(|p| p.path == path) {
+            uploads.remove(index);
+        }
     }
 }
 
@@ -488,6 +506,23 @@ mod tests {
         drop(prepared);
         assert!(path.exists());
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn verbatim_drive_paths_are_simplified_for_tdlib() {
+        assert_eq!(
+            plain_path(r"\\?\C:\Photos\a.png".into()),
+            PathBuf::from(r"C:\Photos\a.png")
+        );
+        for kept in [
+            r"\\?\UNC\server\share\a.png".to_string(),
+            format!(r"\\?\C:\{}", "a".repeat(300)),
+        ] {
+            assert_eq!(plain_path(kept.clone().into()), PathBuf::from(kept));
+        }
+        let path = std::env::temp_dir().join(format!("veygram-plain-{}.txt", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        let prepared = prepare(path, true).unwrap();
+        assert!(!prepared.path.to_string_lossy().starts_with(r"\\?\"));
     }
     #[test]
     fn missing_files_and_directories_are_rejected() {
