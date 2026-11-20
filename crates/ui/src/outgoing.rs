@@ -13,7 +13,8 @@ pub struct AttachmentSources {
     /// A modal open-file dialog owned by the given Win32 window handle; `Ok(None)` on cancel.
     /// Runs on an attachment worker, never on the UI thread.
     pub pick: fn(isize) -> Result<Option<PathBuf>, &'static str>,
-    /// A cheap clipboard format query, called on the UI thread for Ctrl+V.
+    /// A cheap clipboard format query, called on the UI thread for Ctrl+V. True only for a
+    /// bitmap without text, so copied spreadsheet cells still paste as text.
     pub has_image: fn() -> bool,
     /// Lends the clipboard DIB (no file header) to the reader while it stays locked.
     /// Runs on an attachment worker.
@@ -221,25 +222,27 @@ impl State {
         w.set_outgoing_preview(Default::default());
         w.set_outgoing_caption("".into());
     }
-    fn start_outgoing(&self, w: &AppWindow, paste: bool) {
+    /// Returns whether a preparation worker was started. A declined paste falls through to
+    /// the composer's normal text paste.
+    fn start_outgoing(&self, w: &AppWindow, paste: bool) -> bool {
         if w.get_blocked()
             || !w.get_ready()
             || w.get_editing()
             || w.get_outgoing_open()
             || self.outgoing.busy.get()
         {
-            return;
+            return false;
         }
         let Some(chat) = self.feed.history.borrow().chat else {
-            return;
+            return false;
         };
         let Some(sources) = self.outgoing.sources.get() else {
             w.set_error("Attaching files is not available.".into());
-            return;
+            return false;
         };
         if self.outgoing.uploads.borrow().len() >= 8 {
             w.set_error("Wait for one of the eight pending file uploads to finish.".into());
-            return;
+            return false;
         }
         let generation = self.outgoing.generation.get();
         let (tx, rx) = mpsc::sync_channel(1);
@@ -266,7 +269,9 @@ impl State {
             self.outgoing.result.borrow_mut().take();
             w.set_attachment_busy(false);
             w.set_error("Could not start file preparation.".into());
+            return false;
         }
+        true
     }
     fn outgoing_ready(&self, w: &AppWindow) {
         let Some((generation, chat, rx)) = self.outgoing.result.borrow_mut().take() else {
@@ -378,10 +383,7 @@ pub(super) fn bind(w: &AppWindow, state: &Rc<State>) {
         {
             return false;
         }
-        if let Some(w) = weak.upgrade() {
-            s.start_outgoing(&w, true);
-        }
-        true
+        weak.upgrade().is_some_and(|w| s.start_outgoing(&w, true))
     });
     let weak = w.as_weak();
     let s = state.clone();

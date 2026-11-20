@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use windows_sys::Win32::System::{DataExchange::*, Memory::*};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 
-/// CF_DIB and CF_DIBV5 from the standard clipboard formats.
+/// CF_DIB, CF_UNICODETEXT and CF_DIBV5 from the standard clipboard formats.
 const CF_DIB: u32 = 8;
+const CF_UNICODETEXT: u32 = 13;
 const CF_DIBV5: u32 = 17;
 /// Larger clipboard bitmaps are rejected before any byte is read.
 const MAX_CLIPBOARD_BYTES: usize = 64 * 1024 * 1024;
@@ -49,10 +50,16 @@ pub fn pick_file(owner: isize) -> Result<Option<PathBuf>, &'static str> {
     Ok(Some(std::ffi::OsString::from_wide(&path[..end]).into()))
 }
 
-/// A cheap format query for Ctrl+V: true when the clipboard holds a device-independent bitmap.
+/// A cheap format query for Ctrl+V: true when the clipboard holds a device-independent bitmap
+/// and no text. Spreadsheet and Office copies carry both (Windows synthesizes CF_DIB from their
+/// bitmap); those must paste as text.
 pub fn clipboard_has_image() -> bool {
     // SAFETY: read-only format queries without pointers or clipboard ownership.
-    unsafe { IsClipboardFormatAvailable(CF_DIB) != 0 || IsClipboardFormatAvailable(CF_DIBV5) != 0 }
+    unsafe {
+        IsClipboardFormatAvailable(CF_UNICODETEXT) == 0
+            && (IsClipboardFormatAvailable(CF_DIB) != 0
+                || IsClipboardFormatAvailable(CF_DIBV5) != 0)
+    }
 }
 
 /// Passes the clipboard bitmap (a packed DIB without a file header) to `read` while the

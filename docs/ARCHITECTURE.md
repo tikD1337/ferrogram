@@ -280,7 +280,9 @@ These are hypotheses. Each is validated by before and after measurements.
 - **The open-file dialog and the clipboard bitmap** are Win32 calls in `tg-platform`
   (`pick_file`, `clipboard_has_image`, `read_clipboard_image`). `tg-app` injects them into `tg-ui`
   as `AttachmentSources`, so `tg-ui` has no `unsafe` code. Both run on a short-lived worker
-  started by the attach button or Ctrl+V; nothing runs while idle.
+  started by the attach button or Ctrl+V; nothing runs while idle. Ctrl+V attaches only a
+  bitmap without text (copied spreadsheet cells carry both and paste as text), and falls
+  through to the normal text paste whenever an attachment cannot start.
 - **Previews are bounded**: PNG/JPEG only, at most 32 MiB encoded and 8 megapixels, scaled to
   320x200 before reaching the UI. Larger or other images are still sent unchanged, as files.
 - **Pasted images** are decoded while the clipboard memory is lent out (no raw copy), written as a
