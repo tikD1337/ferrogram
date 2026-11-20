@@ -74,7 +74,21 @@ Do this only if profiling shows that JSON is a bottleneck.
 | Maturity | 1.x, stable API, backed by a company | Pre-1.0 | Pre-1.0, changing API | Pre-1.0; latest release on crates.io — October 2025 | — |
 | License | GPLv3 / free Royalty-free / commercial | MIT | MIT / Apache-2.0 | Apache-2.0 | — |
 
-Electron, Tauri and any WebView are excluded: they conflict with the project's goal.
+The native interface excludes Electron, Tauri and WebViews.
+
+### Decision: WebView2 for web content (2026-11-19)
+
+To reach Telegram Desktop feature parity, WebView2 is approved only for features that require a
+web runtime, including Mini Apps and web-rendered bot content such as HTML widgets.
+
+- Start the runtime only when the user opens content that needs it. Release its views, processes
+  and workers after the last view closes or the client unloads to the tray.
+- Isolate storage and authorization data per account. Prompt before granting access to sensitive
+  capabilities such as the camera, microphone or clipboard.
+- Review security during implementation. Measure RAM and CPU across the whole process tree at
+  startup, while the runtime is in use and after it closes or unloads to the tray.
+
+See [ROADMAP.md](ROADMAP.md#44-bots--mini-apps).
 
 ### Decision: Slint, with a validation prototype
 
