@@ -269,7 +269,9 @@ These are hypotheses. Each is validated by before and after measurements.
   OpenSSL and zlib, the Visual C++ runtime and license texts in one folder. The executable loads
   `tdjson.dll` from its own folder, otherwise from the TDLib installation it was built against.
   Veygram's own `api_id`/`api_hash` are built into release executables only; development builds
-  read `.env`. An installer, code signing and automatic updates are later steps.
+  read `.env`. Release v0.1.0 (2026-11-19) was published as an installer,
+  `Veygram-Setup-<version>-x64.exe`, built outside this repository; a reproducible installer
+  build, an uninstaller, code signing and automatic updates are later steps.
 
 ## 9. Decisions of 2026-11-20
 

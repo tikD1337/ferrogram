@@ -157,10 +157,14 @@ and CPU measurements against equivalent Telegram Desktop workloads.
 For Windows 10 or 11, x64, get an official Veygram build from
 [GitHub Releases](https://github.com/tikD1337/veygram/releases):
 
-- **Installer:** run `Veygram-Setup-<version>-x64.exe` and follow the setup steps.
-- **Portable archive:** when available among the release assets, unpack
-  `Veygram-<version>-windows-x64.zip` into a folder only you can write to and start `veygram.exe`.
-  Keep the bundled DLL files next to it; no installation is needed.
+- **Installer:** run `Veygram-Setup-<version>-x64.exe`. It installs Veygram for your Windows
+  account, adds a Start menu shortcut and includes TDLib and the required runtime libraries.
+  For now the installer is built outside this repository; a reproducible installer build is
+  tracked in [roadmap section 4.11](docs/ROADMAP.md#411-windows-platform--performance).
+- **Portable archive:** [`scripts/package-release.ps1`](scripts/package-release.ps1) builds
+  `Veygram-<version>-windows-x64.zip` with a `.sha256` file; not every release includes it. Unpack
+  it into a folder only you can write to and start `veygram.exe`. Keep the bundled DLL files next
+  to it; no installation is needed.
 
 The builds are not code-signed yet, so Windows SmartScreen may warn when you run the installer
 or start the portable app. Check the release notes and any published SHA-256 checksums.

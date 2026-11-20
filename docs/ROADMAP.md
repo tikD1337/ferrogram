@@ -557,7 +557,10 @@ claims of completed functionality.
 
 - Done 2026-11-18: a portable zip with `tdjson.dll` built from official TDLib source at a pinned
   commit, release notes on GitHub Releases, Veygram's own API credentials (SECURITY.md).
-- An installer, code signing (SmartScreen warns today) and automatic updates.
+- Done 2026-11-19: release v0.1.0 published as an installer, `Veygram-Setup-0.1.0-x64.exe`, with
+  its SHA-256 in the release notes. The installer is built outside this repository.
+- A reproducible installer build in the repository, code signing (SmartScreen warns today) and
+  automatic updates.
 - Verify the published TDLib hash in the packaging script instead of trusting the local build.
 
 
