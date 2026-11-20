@@ -98,18 +98,19 @@ network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS
 - [x] Sign-in with a QR code or a phone number
 - [x] Chat list with avatars, last message time, unread and mention badges, muted chats
 - [x] Seamless history: pages load and unload while you scroll, without jumps
-- [x] Opens a chat at the first unread message; marks messages read when you actually see them 
-- [x] Text with formatting, links, spoilers, right-to-left scripts and colour emoji
-- [x] Photos with captions, albums as one bubble with a photo grid 
-- [x] Date separators, sender names in groups, read checks 
+- [x] Opens a chat at the first unread message; marks messages read when you actually see them
+- [x] Text with formatting, clickable links in messages, spoilers, right-to-left scripts and colour emoji
+- [x] Photos with captions, albums as one bubble with a photo grid
+- [x] Date separators, sender names in groups, read checks
 - [x] Sending text messages
-- [x] Reply, edit, delete and forward from a context menu 
-- [x] Video playback with GPU decoding (Windows Media Foundation) 
+- [x] Sending a photo or document with a caption, from the file picker or a pasted image ¹
+- [x] Reply, edit, delete and forward from a context menu
+- [x] Video playback with GPU decoding (Windows Media Foundation)
 - [x] Voice messages with a waveform, and round video messages played inside their circle
 - [x] Files: download with progress, open with a SmartScreen mark, confirmation for programs ¹
-- [x] Static stickers and single emoji drawn large 
-- [x] Service messages ("Anna joined the group") as centred pills 
-- [x] Desktop notifications that open the chat 
+- [x] Static stickers and single emoji drawn large
+- [x] Service messages ("Anna joined the group") as centred pills
+- [x] Desktop notifications that open the chat
 - [x] Videos start playing while they download, with seeking into parts not yet downloaded
 - [x] Interface scale from 50 to 300 %, as in Telegram Desktop
 - [x] Night and OLED themes
@@ -118,19 +119,55 @@ network; one short run per client. Details: [docs/BENCHMARKS.md](docs/BENCHMARKS
 
 **Not yet** — see the [roadmap](docs/ROADMAP.md)
 
-- [ ] GIFs, animated stickers
-- [ ] Reactions, pinning, message links, selecting several messages
-- [ ] Search, folders, settings
-- [ ] Calls, channels with comments, bots, polls
+The goal is parity with Telegram Desktop. [Stage 4](docs/ROADMAP.md#stage-4-features) groups the
+remaining work into these areas; some already have working foundations listed above:
+
+- [ ] **[Media & creation](docs/ROADMAP.md#41-media--creation):** send videos, albums and multiple
+  files, drag-and-drop, upload progress; record voice and round video messages; edit media and
+  scheduled sends.
+- [ ] **[Chat interactivity](docs/ROADMAP.md#42-chat-interactivity):** polls and quizzes, reactions,
+  pinning, synchronized drafts, message links and selecting multiple messages.
+- [ ] **[Channels, groups & moderation](docs/ROADMAP.md#43-channels-groups--moderation):** forums and
+  topics, channel comments and discussion threads, profiles, member management and admin tools.
+- [ ] **[Bots & Mini Apps](docs/ROADMAP.md#44-bots--mini-apps):** keyboards, inline queries, payments
+  and Mini Apps, with an isolated WebView2 runtime started on demand and released after use.
+- [ ] **[Media viewer & player](docs/ROADMAP.md#45-media-viewer--player):** fullscreen navigation,
+  seeking, speed and picture-in-picture controls, GIFs, background audio, playlists and media keys.
+- [ ] **[Stickers, custom emoji & rich text](docs/ROADMAP.md#46-stickers-custom-emoji--rich-text):**
+  animated TGS/WebM stickers, inline custom emoji, an emoji/sticker/GIF panel and richer editing.
+- [ ] **[Navigation & organization](docs/ROADMAP.md#47-navigation--organization):** chat folders,
+  archive, global and in-chat search, contacts and a working main menu.
+- [ ] **[Multi-account](docs/ROADMAP.md#48-multi-account):** add and switch accounts with isolated
+  sessions, notifications and a shared memory budget.
+- [ ] **[Calls](docs/ROADMAP.md#49-calls):** audio/video calls, group calls, screen sharing, device
+  controls and resource cleanup after a call ends.
+- [ ] **[Settings & customization](docs/ROADMAP.md#410-settings--customization):** profile, privacy,
+  security, notifications, storage/cache management, proxies, themes and language.
+- [ ] **[Windows platform & performance](docs/ROADMAP.md#411-windows-platform--performance):** tray
+  support with deep memory unloading of the UI, decoded media and inactive web views, plus Windows
+  integration, accessibility and verified updates.
+
+Every area keeps caches bounded in bytes and heavy subsystems on demand, with before/after RAM
+and CPU measurements against equivalent Telegram Desktop workloads.
 
 ## 🚀 Try it
 
 ### Download
 
-Get `Veygram-<version>-windows-x64.zip` from [Releases](https://github.com/tikD1337/veygram/releases),
-unpack the whole folder anywhere you alone can write to and start `veygram.exe`. Keep the DLL files
-next to it. Windows 10 or 11, x64. The build is not code-signed yet, so SmartScreen may warn on the
-first start; the SHA-256 of each zip is published next to it.
+For Windows 10 or 11, x64, get an official Veygram build from
+[GitHub Releases](https://github.com/tikD1337/veygram/releases):
+
+- **Installer:** run `Veygram-Setup-<version>-x64.exe`. It installs Veygram for your Windows
+  account, adds a Start menu shortcut and includes TDLib and the required runtime libraries.
+  For now the installer is built outside this repository; a reproducible installer build is
+  tracked in [roadmap section 4.11](docs/ROADMAP.md#411-windows-platform--performance).
+- **Portable archive:** [`scripts/package-release.ps1`](scripts/package-release.ps1) builds
+  `Veygram-<version>-windows-x64.zip` with a `.sha256` file; not every release includes it. Unpack
+  it into a folder only you can write to and start `veygram.exe`. Keep the bundled DLL files next
+  to it; no installation is needed.
+
+The builds are not code-signed yet, so Windows SmartScreen may warn when you run the installer
+or start the portable app. Check the release notes and any published SHA-256 checksums.
 
 ### Demo mode, no account needed
 
